@@ -11,18 +11,43 @@
 **从 git 安装**（还没发布到 npm 时可用）：
 
 ```bash
-# 通用：有仓库读权限就能装，使用者不需要 GitHub 账号或密钥
+# 推荐：公开仓库，使用者不需要 GitHub 账号或密钥
 npm install git+https://github.com/jianghongjiao/testDemo.git
-
-# 走 SSH：要求使用者自己的 GitHub 账号已配好 SSH key
-npm install git+ssh://git@github.com/jianghongjiao/testDemo.git
 ```
 
-> **别用 `npm install github:jianghongjiao/testDemo` 这种简写**：npm 会把它解析成
-> `ssh://git@github.com/...`，等于强制使用者配 SSH key，否则直接 permission denied。
-> 想给别人用，务必写明 `git+https://` 全称。
+装完后 `package.json` 里的记录会被 npm 规范化成简写形式，这是正常的、不影响使用：
 
-> 用 git 方式安装时，npm 会自动执行本包的 `prepare` 脚本完成构建，所以 `dist/` 不需要提交到仓库。
+```json
+"dependencies": { "testdemo": "github:jianghongjiao/testDemo" }
+```
+
+> 也支持 SSH（要求使用者自己的 GitHub 账号已配好 key）：
+> `npm install git+ssh://git@github.com/jianghongjiao/testDemo.git`
+
+> 用 git 方式安装时，npm 会自动执行本包的 `prepare` 脚本，在**使用者机器上**现场构建出
+> `dist/`，所以 `dist/` 不需要提交到仓库 —— 代价是安装时多花几秒装 devDependencies。
+
+<details>
+<summary>踩过的坑：npm 的 <code>github:</code> 简写走的是 HTTPS 还是 SSH？</summary>
+
+本仓库早期版本这里写着"`github:` 简写会被解析成 `ssh://`，务必写明 `git+https://` 全称"。
+**这个说法是错的**，实测结论如下（npm 10.9.2 / Node 23.11.0，用 `GIT_SSH_COMMAND=false`
+把 SSH 通道彻底堵死后测试）：
+
+| 写法 | 禁用 SSH 后 |
+| --- | --- |
+| `npm install github:jianghongjiao/testDemo` | 装成功 → 走的是 HTTPS |
+| `package.json` 里手写 `git+https://...` | 装成功 → 走的是 HTTPS |
+
+当时那个"失败"的真实元凶是 `~/.gitconfig` 里的一条
+`url.https://github.com/.insteadOf = ssh://git@github.com/` 规则，它把 SSH 地址改写成
+HTTPS 地址，撞上了当时的网络问题 —— 和 npm 的简写没关系。
+
+更老的 npm 版本行为可能不同。若使用者报 `Permission denied (publickey)`，让他把
+`"testdemo": "git+https://github.com/jianghongjiao/testDemo.git"` 手写进 `package.json`
+再 `npm install`（**不要**用 `npm install <url>`，那会被 npm 改写回简写形式）。
+
+</details>
 
 **从 npm 安装**（发布之后）：
 
