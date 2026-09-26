@@ -49,10 +49,18 @@ HTTPS 地址，撞上了当时的网络问题 —— 和 npm 的简写没关系�
 
 </details>
 
-**从 npm 安装**（发布之后）：
+**从 npm 安装**：
+
+> ⚠️ **目前不可用 —— 本包尚未发布到 npm。**
+>
+> 而且 `testdemo` 这个名字**已经被别人占用**（npm 上是 `tugenhua` 的 `0.0.1`，
+> 描述 `node package test`，看起来是随手占的），所以按现在 `package.json` 里的名字
+> **发不出去**。要发布必须先改名或改用 scope，见文末「发布到 npm」。
+>
+> 在那之前，请用上面的 git 方式安装。仓库是公开的，不需要 GitHub 账号或密钥。
 
 ```bash
-npm install testdemo
+npm install testdemo   # ← 现在跑这条装到的会是别人的包，不是本项目
 ```
 
 ## 快速开始
@@ -292,11 +300,38 @@ npm pack --dry-run   # 确认 demo/ 未进包、dist 全在
 
 ## 发布到 npm
 
+**前置：`testdemo` 这个名字已被他人占用**，所以发布前必须先决定新名字（改
+`package.json` 的 `name`，同时同步 README 里的安装示例）：
+
+```
+tdw-chat            实测可用
+float-chat-widget   实测可用
+testdemo-chat       实测可用
+@<你的用户名>/testdemo   用 scope 保留原名
+```
+
+发布步骤：
+
 ```bash
+npm login            # 需要你自己的账号密码 / 2FA
+npm whoami           # 确认登录成功
 npm publish --access public
 ```
 
 `prepublishOnly` 会在发布前自动跑类型检查和构建，所以不会发出没构建的包。
+
+关于 `--access public`：**它只对带 scope 的包名有意义。**
+
+| 包名形式 | 发布后的可见性 |
+| --- | --- |
+| `tdw-chat`（不带 scope） | 本来就是公开的，这个 flag 是多余的（写了无害） |
+| `@你/testdemo`（带 scope） | **默认 restricted 私有**，必须加 `--access public` 才公开 |
+
+已经发布了想事后改可见性：`npm access set status=public <包名>`
+（npm 10 里老的 `npm access public` 写法已移除）。
+
+> 发布是**单向**的：`npm unpublish` 有 72 小时限制，且名字会被永久保留不可再用。
+> 想先试水的话，`npm publish --dry-run` 能完整走一遍打包和校验但不真正上传。
 
 ## License
 
