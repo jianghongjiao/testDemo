@@ -53,6 +53,10 @@
     "type": "git",
     "url": "git+https://github.com/jianghongjiao/testDemo.git"
   },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org",
+    "access": "public"
+  },
   "devDependencies": {
     "tsup": "^8.5.1",
     "typescript": "~5.9.3"
