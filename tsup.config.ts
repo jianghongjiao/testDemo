@@ -9,6 +9,10 @@ export default defineConfig({
   dts: true,
   clean: true,
   sourcemap: true,
-  target: 'node18',
+  // 浏览器目标。注意 esbuild 没有 "browser" 这个 target 名（合法值只有
+  // esN / chromeN / safariN 等），要写成具体的 esN。es2020 覆盖 2020 年后的常青浏览器。
+  target: 'es2020',
+  platform: 'browser',
+  // 不要开 shims —— 那会注入 node:path / node:url，直接毁掉浏览器可用性
   outDir: 'dist',
 });

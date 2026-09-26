@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>testdemo · 断言页</title>
+    <style>
+      body {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        margin: 0;
+        padding: 32px 24px;
+        font-size: 13px;
+        line-height: 1.6;
+        color: #111827;
+      }
+      h1 { font-size: 16px; margin: 0 0 4px; font-family: -apple-system, sans-serif; }
+      #summary {
+        font-size: 15px;
+        font-weight: 700;
+        padding: 10px 14px;
+        border-radius: 8px;
+        display: inline-block;
+        margin: 16px 0 20px;
+      }
+      #summary.pending { background: #f3f4f6; color: #6b7280; }
+      #summary.pass { background: #dcfce7; color: #166534; }
+      #summary.fail { background: #fee2e2; color: #991b1b; }
+      ol { padding-left: 26px; margin: 0; }
+      li { margin-bottom: 3px; }
+      li.pass::marker { color: #16a34a; }
+      li.fail { background: #fef2f2; }
+      li.fail::marker { color: #dc2626; }
+      li.skip::marker { color: #d97706; }
+      .why { color: #dc2626; display: block; padding-left: 4px; }
+      .note { color: #6b7280; }
+      code { background: #f3f4f6; padding: 1px 4px; border-radius: 3px; }
+      p.hint { max-width: 720px; color: #6b7280; }
+    </style>
+  </head>
+  <body>
+    <h1>自动化断言页</h1>
+    <p class="hint">
+      打开即跑，无需交互。覆盖重复挂载、a11y 状态、IME 组合态回车、destroy 清理、
+      以及无 DOM 环境（Web Worker）下的降级行为。
+      <strong>这个页面必须通过 http 打开</strong>（<code>python3 -m http.server</code>），
+      <code>file://</code> 下 Worker 与模块加载都会被浏览器安全策略拦掉。
+    </p>
+    <p class="hint">
+      ⚠️ 关于 IME 的那条断言：它用 <code>new KeyboardEvent('keydown', { isComposing: true })</code>
+      合成事件，验证的是<strong>我们的拦截逻辑分支</strong>是否正确。真实输入法的
+      <code>compositionstart/compositionend</code> 时序在不同浏览器、不同输入法下并不一致，
+      <strong>合成事件替代不了真机验证</strong> —— 请务必用中文输入法在输入框里打拼音、
+      按回车选词，确认它换行/选词而不是发送。这是本组件最容易出 bug 的一处。
+    </p>
+
+    <div id="summary" class="pending">运行中…</div>
+    <ol id="results"></ol>
+
+    <script type="module">
+      import { initChat, getChatStyles } from '../dist/index.js';
+
+      const resultsEl = document.getElementById('results');
+      const summaryEl = document.getElementById('summary');
+      const list = [];
+
+      const q = (sel) => document.querySelectorAll(sel).length;
+      const once = (sel) => document.querySelector(sel);
+
+      async function test(name, fn) {
+        try {
+          const why = await fn();
+          if (why === 'SKIP') list.push({ name, status: 'skip' });
+          else if (typeof why === 'string') list.push({ name, status: 'fail', why });
+          else list.push({ name, status: 'pass' });
+        } catch (error) {
+          list.push({ name, status: 'fail', why: String(error && error.message ? error.message : error) });
+        }
+      }
+
+      function keydown(target, init) {
+        target.dispatchEvent(
+          new KeyboardEvent('keydown', Object.assign({ bubbles: true, cancelable: true }, init)),
+        );
+      }
+
+      /* ============================================================ 断言开始 */
+
+      await test('getChatStyles() 返回非空 CSS 且含 .tdw-root', () => {
+        const css = getChatStyles();
+        if (typeof css !== 'string' || css.length < 100) return '返回内容过短：' + css.length;
+        if (!css.includes('.tdw-root')) return '缺少 .tdw-root 选择器';
+      });
+
+      // ---- 挂载
+      const chat = initChat({
+        key: 'assert',
+        title: '断言实例',
+        greeting: '开场白',
+        onSend: (text) => '回声：' + text, // 同步回复，消息数可预期
+      });
+
+      await test('initChat() 后根节点恰好 1 个', () => {
+        const n = q('[data-tdw-root]');
+        if (n !== 1) return '实际 ' + n + ' 个';
+      });
+
+      await test('<style id="tdw-styles"> 恰好 1 个', () => {
+        const n = q('#tdw-styles');
+        if (n !== 1) return '实际 ' + n + ' 个';
+      });
+
+      await test('重复 initChat() 不挂出第二个按钮、不加第二份样式', () => {
+        const again = initChat({ key: 'assert' });
+        if (again !== chat) return '返回的不是同一个实例';
+        if (q('[data-tdw-root]') !== 1) return '根节点变成了 ' + q('[data-tdw-root]') + ' 个';
+        if (q('#tdw-styles') !== 1) return '样式表变成了 ' + q('#tdw-styles') + ' 份';
+      });
+
+      await test('isMounted === true 且 getElement() 非 null', () => {
+        if (chat.isMounted !== true) return 'isMounted = ' + chat.isMounted;
+        if (!chat.getElement()) return 'getElement() 返回 null';
+      });
+
+      /* ---- 打开与 a11y */
+
+      const launcher = once('[data-tdw-part="launcher"]');
+      const panel = once('[data-tdw-part="panel"]');
+      const input = once('[data-tdw-part="input"]');
+
+      await test('点击 launcher 后打开', () => {
+        launcher.click();
+        if (chat.isOpen !== true) return 'isOpen = ' + chat.isOpen;
+        if (launcher.getAttribute('aria-expanded') !== 'true') return 'aria-expanded 未更新';
+        if (panel.hidden) return 'panel 仍带 hidden';
+      });
+
+      await test('打开后 data-tdw-state="open"', () => {
+        const state = chat.getElement().getAttribute('data-tdw-state');
+        if (state !== 'open') return 'data-tdw-state = ' + state;
+      });
+
+      await test('aria-controls 指向的 id 能被解析到（面板常驻 DOM）', () => {
+        const id = launcher.getAttribute('aria-controls');
+        if (!id) return '没有 aria-controls';
+        if (!document.getElementById(id)) return '解析不到 #' + id;
+      });
+
+      await test('自动聚焦落在输入框上', () => {
+        if (document.activeElement !== input) {
+          return 'activeElement = ' + (document.activeElement && document.activeElement.tagName);
+        }
+      });
+
+      /* ---- IME 与发送 */
+
+      await test('IME 组合态回车【不】发送', () => {
+        const before = chat.getMessages().length;
+        input.value = '正在用拼音打字';
+        keydown(input, { key: 'Enter', isComposing: true });
+        if (chat.getMessages().length !== before) {
+          return '组合态回车被误判为发送（消息数 ' + before + ' -> ' + chat.getMessages().length + '）';
+        }
+        if (input.value !== '正在用拼音打字') return '输入框内容被清空了';
+      });
+
+      await test('普通回车会发送，并清空输入框', () => {
+        const before = chat.getMessages().length;
+        keydown(input, { key: 'Enter' });
+        const after = chat.getMessages().length;
+        if (after <= before) return '没有发送（消息数仍为 ' + before + '）';
+        if (input.value !== '') return '输入框没被清空：' + JSON.stringify(input.value);
+      });
+
+      await test('发送内容进入了消息列表', () => {
+        const last = chat.getMessages()[chat.getMessages().length - 2];
+        if (!last || last.content !== '正在用拼音打字') {
+          return '倒数第二条不是刚发的内容：' + JSON.stringify(last && last.content);
+        }
+      });
+
+      await test('Shift+Enter 换行而不发送', () => {
+        const before = chat.getMessages().length;
+        input.value = '第一行';
+        keydown(input, { key: 'Enter', shiftKey: true });
+        if (chat.getMessages().length !== before) return 'Shift+Enter 被当成发送了';
+      });
+
+      /* ---- 关闭与焦点归还 */
+
+      await test('ESC 关闭并把焦点还给 launcher', () => {
+        keydown(document, { key: 'Escape' });
+        if (chat.isOpen !== false) return 'isOpen = ' + chat.isOpen;
+        if (launcher.getAttribute('aria-expanded') !== 'false') return 'aria-expanded 未复位';
+        if (!panel.hidden) return 'panel 没有重新带上 hidden';
+        if (document.activeElement !== launcher) {
+          return '焦点停在 ' + (document.activeElement && document.activeElement.tagName);
+        }
+      });
+
+      await test('关闭后 document 上的 ESC 监听已撤掉', () => {
+        // 关闭后再按 ESC 不该有任何反应（也不该抛错）
+        keydown(document, { key: 'Escape' });
+        if (chat.isOpen !== false) return 'ESC 把已关闭的面板又打开了？';
+      });
+
+      /* ---- 无 DOM 环境（Web Worker 里没有 document） */
+
+      await test('Web Worker（无 document）中 initChat() 降级为空操作实例', async () => {
+        const url = new URL('../dist/index.js', location.href).href;
+        const src =
+          'import(' + JSON.stringify(url) + ').then(function (m) {' +
+          '  var h = m.initChat({ silent: true });' +
+          '  h.destroy(); h.destroy(); h.open();' +
+          '  postMessage({ mounted: h.isMounted, el: h.getElement() === null, msgs: h.getMessages().length });' +
+          '}).catch(function (e) { postMessage({ error: String(e) }); });';
+
+        const worker = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })));
+        const result = await new Promise((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error('Worker 超时（页面是 http:// 打开的吗？）')), 5000);
+          worker.onmessage = (e) => {
+            clearTimeout(timer);
+            resolve(e.data);
+          };
+          worker.onerror = (e) => {
+            clearTimeout(timer);
+            reject(new Error('Worker 出错：' + (e.message || 'unknown')));
+          };
+        });
+        worker.terminate();
+
+        if (result.error) return 'Worker 里抛异常了：' + result.error;
+        if (result.mounted !== false) return 'isMounted = ' + result.mounted;
+        if (result.el !== true) return 'getElement() 不是 null';
+        if (result.msgs !== 0) return 'getMessages() 不是空数组';
+      });
+
+      /* ---- destroy */
+
+      await test('destroy() 之后根节点与样式表计数都归 0', () => {
+        chat.destroy();
+        if (q('[data-tdw-root]') !== 0) return '还剩 ' + q('[data-tdw-root]') + ' 个根节点';
+        if (q('#tdw-styles') !== 0) return '还剩 ' + q('#tdw-styles') + ' 份样式';
+      });
+
+      await test('destroy() 幂等，且之后所有方法空转不抛', () => {
+        chat.destroy(); // 第二次
+        chat.open();
+        chat.close();
+        chat.toggle();
+        chat.sendMessage('不该出现');
+        chat.setTyping(true);
+        chat.clearMessages();
+        chat.update({ theme: 'dark' });
+        if (chat.isMounted !== false) return 'isMounted 仍为 true';
+        if (chat.getElement() !== null) return 'getElement() 不为 null';
+        if (chat.isOpen !== false) return 'isOpen 变成了 true';
+        if (chat.getMessages().length !== 0) return '还能塞进消息';
+      });
+
+      await test('destroy() 后再 initChat() 能干净地重新挂载', () => {
+        const fresh = initChat({ key: 'assert-2', greeting: '重来一次' });
+        const ok = q('[data-tdw-root]') === 1 && q('#tdw-styles') === 1 && fresh.isMounted === true;
+        fresh.destroy();
+        if (!ok) return '重新挂载失败';
+      });
+
+      /* ============================================================ 渲染结果 */
+
+      for (const item of list) {
+        const li = document.createElement('li');
+        li.className = item.status;
+        li.textContent = item.name;
+        if (item.status === 'skip') li.textContent += '（跳过）';
+        if (item.why) {
+          const span = document.createElement('span');
+          span.className = 'why';
+          span.textContent = '↳ ' + item.why;
+          li.appendChild(span);
+        }
+        resultsEl.appendChild(li);
+      }
+
+      const failed = list.filter((i) => i.status === 'fail').length;
+      const passed = list.filter((i) => i.status === 'pass').length;
+      const skipped = list.filter((i) => i.status === 'skip').length;
+
+      summaryEl.className = failed ? 'fail' : 'pass';
+      summaryEl.textContent = failed
+        ? failed + ' 项失败 / ' + passed + ' 项通过' + (skipped ? ' / ' + skipped + ' 项跳过' : '')
+        : '全部通过（' + passed + ' 项）' + (skipped ? '，' + skipped + ' 项跳过' : '');
+      document.title =
+        (failed ? '❌ ' + failed + ' 项失败' : '✅ 全部通过') + ' · testdemo 断言页';
+      window.__assertResult = { passed, failed, skipped, list };
+    </script>
+  </body>
+</html>

@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>testdemo · CSS 层叠契约回归</title>
+    <!-- 组件样式的注入方式与 custom.html 一致：使用者自己 prepend 到 head 最前面 -->
+    <script type="module">
+      import { getChatStyles } from '../dist/index.js';
+      const base = document.createElement('style');
+      base.textContent = getChatStyles();
+      document.head.prepend(base);
+    </script>
+    <style>
+      body {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        margin: 0;
+        padding: 32px 24px;
+        font-size: 13px;
+        line-height: 1.6;
+      }
+      h1 { font-size: 16px; margin: 0 0 6px; font-family: -apple-system, sans-serif; }
+      p.hint { max-width: 720px; color: #6b7280; font-family: -apple-system, sans-serif; }
+      #out {
+        background: #0f172a;
+        color: #e2e8f0;
+        padding: 16px;
+        border-radius: 8px;
+        white-space: pre-wrap;
+        max-width: 900px;
+        font-size: 12px;
+      }
+      #out.pass { color: #86efac; }
+      #out.fail { color: #fca5a5; }
+
+      /* ---------------------------------------------------------------
+         宿主污染区：全是元素选择器（权重 0,0,1），
+         按层叠规则应该完全打不过组件的单类名（0,1,0）
+         --------------------------------------------------------------- */
+      section { border: 5px solid lime; }
+      div { margin: 20px; }
+      button { all: unset; }
+      textarea { border: 3px dotted magenta; font-size: 22px; }
+
+      /* ---------------------------------------------------------------
+         使用者覆盖区：与组件【同权重】（0,1,0），
+         因为组件样式表被 prepend 到了前面，这里后写所以赢 —— 不需要 !important
+         --------------------------------------------------------------- */
+      .tdw-bubble { border-radius: 0px; }
+      .tdw-root { --tdw-radius: 4px; }
+    </style>
+  </head>
+  <body>
+    <h1>CSS 层叠契约回归</h1>
+    <p class="hint">
+      这一页把两件事量化验证了：① 宿主的元素选择器污染进不来；② 使用者写同权重的
+      <code>.tdw-bubble {}</code> 就能覆盖，全程不需要 <code>!important</code>。
+      结果直接读 <code>getComputedStyle</code>，不是靠肉眼看。
+    </p>
+    <pre id="out">running…</pre>
+
+    <script type="module">
+      import { initChat } from '../dist/index.js';
+
+      initChat({
+        key: 'stylecheck',
+        greeting: '这条气泡应该被页面下方的 .tdw-bubble 规则改成直角',
+        injectStyles: false, // 样式表已由 head 里那段脚本注入
+        autoFocus: 'none',
+        // cssVars 走内联 style，优先级最高，应该压过上面 .tdw-root 里的 --tdw-radius: 4px
+        cssVars: { '--tdw-radius': '999px' },
+      });
+
+      const lines = [];
+      const check = (name, actual, expected) => {
+        const ok = actual === expected;
+        lines.push(
+          (ok ? 'PASS ' : 'FAIL ') + name +
+            '  实际=' + JSON.stringify(actual) +
+            (ok ? '' : '  期望=' + JSON.stringify(expected)),
+        );
+      };
+
+      // 等一帧，确保组件已经挂载完成
+      setTimeout(() => {
+        const cs = (sel, prop) => {
+          const node = document.querySelector(sel);
+          return node ? getComputedStyle(node)[prop] : '<元素不存在>';
+        };
+
+        // ---- ① 宿主污染进不来
+
+        // 注意面板本来就有 1px 边框（组件自己的 token），所以要判"宿主的规则没生效"，
+        // 而不是判边框为 0
+        check(
+          '宿主 section{border:5px lime} 未击穿 .tdw-panel',
+          cs('.tdw-panel', 'borderTopWidth') !== '5px' &&
+            cs('.tdw-panel', 'borderTopColor') !== 'rgb(0, 255, 0)',
+          true,
+        );
+        check('宿主 div{margin:20px} 未击穿 .tdw-bubble', cs('.tdw-bubble', 'marginTop'), '0px');
+        const bg = cs('.tdw-launcher', 'backgroundColor');
+        check('宿主 button{all:unset} 未清掉 launcher 底色', bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent', true);
+        check('宿主 textarea 样式未击穿 .tdw-input', cs('.tdw-input', 'borderTopStyle') !== 'dotted', true);
+
+        // ---- ② 同权重覆盖生效，不需要 !important
+
+        check('同权重 .tdw-bubble{border-radius:0} 生效', cs('.tdw-bubble', 'borderRadius'), '0px');
+
+        // ---- ③ token 的优先级链条：cssVars(内联) > 页面规则 > 组件默认
+
+        const root = document.querySelector('[data-tdw-root]');
+        check(
+          'cssVars 压过页面上的 .tdw-root 规则',
+          getComputedStyle(root).getPropertyValue('--tdw-radius').trim(),
+          '999px',
+        );
+        check(
+          'token 经继承下发到内部元素',
+          getComputedStyle(document.querySelector('.tdw-panel')).getPropertyValue('--tdw-radius').trim(),
+          '999px',
+        );
+
+        const failed = lines.some((l) => l.startsWith('FAIL'));
+        const out = document.getElementById('out');
+        out.textContent = lines.join('\n') + '\n\n' + (failed ? '存在失败项' : '全部通过');
+        out.className = failed ? 'fail' : 'pass';
+        document.title = (failed ? '❌ 存在失败项' : '✅ 全部通过') + ' · CSS 层叠契约';
+        window.__styleResult = { failed, lines };
+      }, 0);
+    </script>
+  </body>
+</html>

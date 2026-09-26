@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>testdemo · 重构 UI（不写 !important）</title>
+    <style>
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+        margin: 0;
+        padding: 40px 24px;
+        line-height: 1.7;
+        color: #111827;
+      }
+      h1 { font-size: 20px; margin: 0 0 4px; }
+      .lead { color: #6b7280; margin: 0 0 28px; }
+      .panel {
+        border: 1px solid #e5e7eb;
+        border-radius: 12px;
+        padding: 20px;
+        max-width: 760px;
+        margin-bottom: 20px;
+      }
+      .panel h2 { font-size: 15px; margin: 0 0 12px; }
+      pre {
+        background: #111827;
+        color: #e5e7eb;
+        padding: 14px;
+        border-radius: 8px;
+        overflow-x: auto;
+        font-size: 13px;
+        margin: 0 0 12px;
+      }
+      code { font-size: 13px; }
+    </style>
+
+    <!--
+      关键点 ①：使用者自己决定样式表位置。
+      这里没有把 getChatStyles() 内联成字面量 —— 那需要构建步骤；
+      实际项目里你可以：
+        a) 构建期把 getChatStyles() 的返回值写进自己的 CSS
+        b) 像下面这样运行时注入，但要保证它插在自己的覆盖规则【之前】
+      我们用的是 (b) 的变体：先把组件样式插进 head 最前面，
+      再让本页 <style> 里的覆盖规则排在后面 —— 同权重，后写的赢。
+    -->
+    <script type="module">
+      import { getChatStyles } from '../dist/index.js';
+
+      // 把组件原始样式放到 head 的【最前面】，
+      // 这样本页后面那些 <style> 里的 .tdw-* 规则天然排在它后面
+      const base = document.createElement('style');
+      base.dataset.tdwBase = '';
+      base.textContent = getChatStyles();
+      document.head.prepend(base);
+    </script>
+
+    <!--
+      关键点 ②：覆盖规则全部是【同权重的单类名】，
+      没有一处 !important —— 因为组件基础样式被 prepend 到了前面，
+      同权重时后写的赢。
+    -->
+    <style>
+      /* 换个主色（类名覆盖法） */
+      .tdw-root {
+        --tdw-radius: 4px;
+        --tdw-radius-bubble: 4px;
+        --tdw-font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+
+      /* 气泡彻底重画：改成方角 + 左侧色条 */
+      .tdw-bubble {
+        border-radius: 0;
+        padding: 10px 14px;
+        box-shadow: none;
+        border-left: 3px solid currentColor;
+      }
+
+      /* 悬浮按钮改成方块 */
+      .tdw-launcher {
+        border-radius: 6px;
+        background: #111827;
+      }
+
+      /* 头部换个底色 */
+      .tdw-header {
+        background: #f3f4f6;
+        border-bottom: 2px solid #111827;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>重构 UI —— 全程不用 <code>!important</code></h1>
+    <p class="lead">
+      右边和左下各有一个实例。右边走的全是本页的覆盖规则，左下用 <code>cssVars</code> 走内联变量。
+    </p>
+
+    <div class="panel">
+      <h2>两层扩展点</h2>
+
+      <p><strong>① CSS 层：类名 + CSS 变量 + <code>injectStyles: false</code></strong></p>
+      <pre><code>import { initChat, getChatStyles } from 'testdemo';
+
+// 自己接管样式表（CSP 场景 / 想自己控制顺序时用）
+const style = document.createElement('style');
+style.textContent = getChatStyles();
+document.head.prepend(style);
+
+initChat({ injectStyles: false });</code></pre>
+      <p>
+        然后写普通 CSS 覆盖即可 —— 同权重、后写的赢：<br />
+        <code>.tdw-bubble { border-radius: 0; border-left: 3px solid currentColor; }</code>
+      </p>
+
+      <p><strong>② <code>cssVars</code>：逐实例覆盖 token，内联 style，连权重都不用算</strong></p>
+      <pre><code>initChat({
+  key: 'themed',
+  position: 'bottom-left',
+  cssVars: {
+    '--tdw-color-primary': '#7c3aed',
+    '--tdw-radius': '999px',
+    '--tdw-launcher-size': '64px',
+    '--tdw-panel-w': '340px',
+  },
+});</code></pre>
+
+      <p><strong>③ 逃生舱：<code>getElement()</code> 拿根节点，或者 <code>renderMessage</code> 完全自定义气泡内容</strong></p>
+      <pre><code>const chat = initChat();
+chat.getElement();          // -> .tdw-root，随便你怎么折腾
+
+initChat({
+  renderMessage(message, { container }) {
+    // 返回字符串 -> 走 textContent（安全）
+    // 返回 Node   -> 原样塞进气泡
+    return message.role === 'user' ? '🗣 ' + message.content : null;
+  },
+});</code></pre>
+    </div>
+
+    <div class="panel">
+      <h2>稳定契约（可以放心依赖）</h2>
+      <p>类名：<code>.tdw-root .tdw-launcher .tdw-panel .tdw-header .tdw-messages
+        .tdw-message .tdw-bubble .tdw-time .tdw-composer .tdw-input .tdw-send .tdw-jump .tdw-error</code></p>
+      <p>语义属性：<code>[data-tdw-part="bubble"]</code> 比类名更稳，推荐优先用这个</p>
+      <p>状态：<code>[data-tdw-state="open|closed"]</code>、<code>[data-tdw-theme="light|dark"]</code>、
+        <code>[data-tdw-position="bottom-right|…"]</code>、<code>[data-tdw-role="user|assistant|system"]</code></p>
+      <p>变量：<code>--tdw-color-*</code> <code>--tdw-radius*</code> <code>--tdw-shadow</code>
+        <code>--tdw-panel-w/h</code> <code>--tdw-offset-x/y</code> <code>--tdw-launcher-size</code>
+        <code>--tdw-z-index</code> <code>--tdw-font-family</code> <code>--tdw-duration</code></p>
+    </div>
+
+    <script type="module">
+      import { initChat } from '../dist/index.js';
+
+      // 实例一：样式表由页面接管，外观被上面的 <style> 完全改写
+      initChat({
+        key: 'restyled',
+        title: '被重构过的实例',
+        subtitle: '方角气泡 + 等宽字体',
+        greeting: ['我的圆角、字体、气泡样式都不是组件默认值。', '但没有一行 !important。'],
+        timestamps: true,
+        injectStyles: false, // 样式表已经由页面上方那段脚本注入了
+        onSend: (text) => '收到：' + text,
+      });
+
+      // 实例二：只换 CSS 变量，一点 CSS 都没写
+      initChat({
+        key: 'themed',
+        position: 'bottom-left',
+        title: '只用 cssVars',
+        subtitle: '紫色 / 大圆角 / 大按钮',
+        greeting: '我没有写任何 CSS，全部通过 cssVars 传入。',
+        cssVars: {
+          '--tdw-color-primary': '#7c3aed',
+          '--tdw-color-bubble-user-bg': '#7c3aed',
+          '--tdw-radius': '999px',
+          '--tdw-radius-bubble': '999px',
+          '--tdw-launcher-size': '64px',
+          '--tdw-panel-w': '340px',
+        },
+        onSend: (text) => '收到：' + text,
+      });
+    </script>
+  </body>
+</html>

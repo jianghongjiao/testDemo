@@ -1,7 +1,10 @@
 {
   "compilerOptions": {
-    "target": "ES2022",
-    "lib": ["ES2022"],
+    // 与 tsup 的 target 对齐，避免"类型检查过但转译后语义漂移"
+    "target": "ES2020",
+    // 刻意不含 ES2022：Array.at() / Object.hasOwn() / structuredClone 这些
+    // ES2022 运行时 API 不会被 polyfill，去掉 lib 让 tsc 提前拦下来
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "strict": true,

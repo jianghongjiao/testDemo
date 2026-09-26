@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>testdemo · 悬浮对话组件演示</title>
+    <style>
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+        margin: 0;
+        padding: 40px 24px;
+        line-height: 1.7;
+        color: #111827;
+      }
+      h1 { font-size: 20px; margin: 0 0 4px; }
+      p.lead { color: #6b7280; margin: 0 0 28px; }
+      .panel {
+        border: 1px solid #e5e7eb;
+        border-radius: 12px;
+        padding: 20px;
+        max-width: 720px;
+        margin-bottom: 20px;
+      }
+      .panel h2 { font-size: 15px; margin: 0 0 12px; }
+      button {
+        font: inherit;
+        padding: 7px 14px;
+        margin: 0 8px 8px 0;
+        border: 1px solid #d1d5db;
+        border-radius: 8px;
+        background: #fff;
+        cursor: pointer;
+      }
+      button:hover { background: #f9fafb; }
+      code { background: #f3f4f6; padding: 2px 5px; border-radius: 4px; font-size: 13px; }
+      pre {
+        background: #f9fafb;
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        padding: 14px;
+        overflow-x: auto;
+        font-size: 13px;
+      }
+      .scroll-filler { height: 120vh; color: #9ca3af; }
+    </style>
+  </head>
+  <body>
+    <h1>悬浮对话组件</h1>
+    <p class="lead">右下角是 <code>initChat()</code> 挂出来的悬浮按钮。点它。</p>
+
+    <div class="panel">
+      <h2>一行接入的全部代码</h2>
+      <pre><code>import { initChat } from 'testdemo';
+
+initChat({ title: '在线客服' });</code></pre>
+    </div>
+
+    <div class="panel">
+      <h2>运行时 API</h2>
+      <button data-act="open">open()</button>
+      <button data-act="close">close()</button>
+      <button data-act="toggle">toggle()</button>
+      <button data-act="send">sendMessage('这是程序发出的一条')</button>
+      <button data-act="echo">模拟真实后端回复</button>
+      <button data-act="stream">pushMessage + updateMessage（流式）</button>
+      <button data-act="clear">clearMessages()</button>
+      <button data-act="destroy">destroy()</button>
+      <button data-act="revive">重新 initChat()</button>
+    </div>
+
+    <div class="panel">
+      <h2>动态换主题 / 换位置</h2>
+      <button data-theme="light">light</button>
+      <button data-theme="dark">dark</button>
+      <button data-theme="auto">auto（跟随系统）</button>
+      <button data-pos="bottom-right">右下</button>
+      <button data-pos="bottom-left">左下</button>
+      <button data-pos="top-right">右上</button>
+      <button data-pos="top-left">左上</button>
+    </div>
+
+    <div class="panel">
+      <h2>多实例：另一个 key</h2>
+      <p>用 <code>key: 'sales'</code> 再挂一个，与默认实例互不干扰。</p>
+      <button data-act="sales">initChat({ key: 'sales' })</button>
+      <button data-act="sales-ping">向 sales 实例发消息</button>
+    </div>
+
+    <div class="scroll-filler">
+      ↓ 往下滚，验证宿主页面的长内容不会影响悬浮层（它不是 <code>position: absolute</code>）。
+    </div>
+
+    <script type="module">
+      import { initChat } from '../dist/index.js';
+
+      // ---- 主角：这就是使用者要写的全部代码
+      let chat = initChat({
+        title: '在线客服',
+        subtitle: '通常几分钟内回复',
+        greeting: ['你好呀 👋', '有什么可以帮你的？'],
+        placeholder: '说点什么…',
+        timestamps: true,
+        onSend(text) {
+          // 返回的字符串会被当作助手消息追加
+          return '你刚刚说的是："' + text + '"';
+        },
+      });
+
+      const status = document.createElement('pre');
+      status.style.cssText =
+        'position:fixed;left:16px;top:16px;z-index:2147483001;margin:0;' +
+        'background:#111827;color:#a7f3d0;padding:8px 12px;border-radius:8px;font-size:12px';
+      document.body.appendChild(status);
+      const say = (t) => {
+        status.textContent = t;
+      };
+      window.addEventListener('error', (e) => say('宿主页面出错：' + e.message));
+
+      document.querySelectorAll('[data-act]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const act = btn.getAttribute('data-act');
+          if (act === 'open') chat.open();
+          if (act === 'close') chat.close();
+          if (act === 'toggle') chat.toggle();
+          if (act === 'send') chat.sendMessage('这是程序发出的一条');
+          if (act === 'clear') chat.clearMessages();
+          if (act === 'destroy') {
+            chat.destroy();
+            say('destroy() 后仍可安全调用 —— 下面是空转结果：\n' + describe(chat));
+          }
+          if (act === 'revive') {
+            chat = initChat({ title: '在线客服', subtitle: '通常几分钟内回复' });
+            say('重新 initChat() 完成\n' + describe(chat));
+          }
+          if (act === 'echo') {
+            chat.sendMessage('这句会被后端"回复"');
+          }
+          if (act === 'stream') {
+            // 真实 LLM 流式输出的用法：先占位拿到 id，再逐块 update
+            const id = chat.pushMessage({ role: 'assistant', content: '' });
+            chat.setTyping(true);
+            const full = '这是一段逐字吐出来的流式回复，用来演示 pushMessage() + updateMessage()。';
+            let i = 0;
+            const timer = setInterval(() => {
+              i += 2;
+              chat.updateMessage(id, { content: full.slice(0, i) });
+              if (i >= full.length) {
+                clearInterval(timer);
+                chat.setTyping(false);
+              }
+            }, 30);
+          }
+          if (act === 'sales') {
+            window.__sales = initChat({
+              key: 'sales',
+              position: 'bottom-left',
+              title: '售前咨询',
+              greeting: '这是第二个实例，左下角。',
+            });
+            say('已挂载 key="sales" 的独立实例（左下角）');
+          }
+          if (act === 'sales-ping') {
+            if (!window.__sales) {
+              say('先点上面的 initChat({ key: "sales" })');
+              return;
+            }
+            window.__sales.open();
+            window.__sales.sendMessage('发给 sales 实例的消息');
+          }
+          if (act !== 'destroy' && act !== 'revive' && act !== 'sales' && act !== 'sales-ping') {
+            say('已调用 ' + act + '()\n' + describe(chat));
+          }
+        });
+      });
+
+      document.querySelectorAll('[data-theme]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const theme = btn.getAttribute('data-theme');
+          chat.update({ theme });
+          say('update({ theme: ' + theme + ' })');
+        });
+      });
+
+      document.querySelectorAll('[data-pos]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const position = btn.getAttribute('data-pos');
+          chat.update({ position });
+          chat.open();
+          say('update({ position: ' + position + ' })');
+        });
+      });
+
+      function describe(instance) {
+        return [
+          'isMounted = ' + instance.isMounted,
+          'isOpen    = ' + instance.isOpen,
+          'getElement() = ' + (instance.getElement() ? instance.getElement().className : 'null'),
+          'getMessages().length = ' + instance.getMessages().length,
+        ].join('\n');
+      }
+
+      // 把实例挂到 window 上，方便开控制台手动玩
+      window.chat = () => chat;
+      say('就绪。试着点右下角的按钮，或在控制台调用 chat()。');
+    </script>
+  </body>
+</html>

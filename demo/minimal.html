@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>别人的页面</title>
+  </head>
+  <body>
+    <!--
+      这一页就是"别人引用你的包"之后的真实样子。
+      页面本身没有任何内容 —— 没有标题、没有按钮、没有说明文字。
+      下面那段 script 是他们要写的全部代码。
+    -->
+    <script type="module">
+      import { initChat } from '../dist/index.js';
+
+      initChat({ title: '在线客服' });
+    </script>
+  </body>
+</html>

@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>testdemo · 恶意宿主样式压力测试</title>
+    <!--
+      这个页面故意写满"手很重的"宿主样式，全部是元素选择器（权重 0,0,1）和
+      高权重选择器，用来验证：我们只用单类名（0,1,0）+ head.prepend()
+      能把绝大多数污染挡在外面。挡不住的那一档见页面底部的说明。
+    -->
+    <style>
+      /* 元素选择器：打不过我们的单类名，理论上完全不该影响组件外观 */
+      * { box-sizing: content-box; }
+      div { margin: 20px; }
+      button { all: unset; }
+      input, textarea, select { border: 3px dotted magenta; font-size: 22px; }
+      p { color: purple; }
+      section { border: 5px solid lime; }
+      header { background: yellow; }
+      svg { width: 96px; height: 96px; }
+      time { text-transform: uppercase; letter-spacing: 4px; }
+      label { color: red; }
+
+      /* 宿主自己的排版 */
+      body {
+        font-family: Georgia, serif;
+        margin: 0;
+        padding: 40px 24px;
+        background: #fffdf5;
+      }
+      h1 { font-size: 20px; }
+      .note {
+        max-width: 760px;
+        border-left: 4px solid #f59e0b;
+        background: #fffbeb;
+        padding: 14px 18px;
+        margin-bottom: 24px;
+      }
+      .note h2 { font-size: 15px; margin: 0 0 8px; }
+      ul { max-width: 760px; padding-left: 22px; }
+      li { margin-bottom: 8px; }
+      code { background: #f3f4f6; padding: 2px 5px; border-radius: 4px; font-size: 13px; }
+      pre {
+        background: #111827;
+        color: #e5e7eb;
+        padding: 14px;
+        border-radius: 8px;
+        overflow-x: auto;
+        font-size: 13px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>恶意宿主样式压力测试</h1>
+
+    <div class="note">
+      <h2>这个页面在干什么</h2>
+      <p>
+        页面上方注入了一整套元素选择器规则 —— <code>* { box-sizing: content-box }</code>、
+        <code>div { margin: 20px }</code>、<code>button { all: unset }</code>、
+        <code>svg { width: 96px; height: 96px }</code>。
+        如果组件外观看上去仍然正常，说明"单类名 + <code>head.prepend()</code>"这套打法成立。
+      </p>
+    </div>
+
+    <div class="note">
+      <h2>为什么这样就能赢</h2>
+      <p>
+        CSS 层叠先比权重：我们的规则全是单类名（<code>0,1,0</code>），宿主的
+        <code>div</code> / <code>button</code> 是元素选择器（<code>0,0,1</code>），
+        <strong>宿主输</strong>，污染进不来。
+      </p>
+      <p>
+        而使用者想覆盖我们时，写同权重的 <code>.tdw-bubble {}</code> 即可 ——
+        因为我们的样式表是 <code>head.prepend()</code> 插到最前面的，
+        同权重时<strong>文档顺序在后者赢</strong>，所以使用者<strong>不需要写 <code>!important</code></strong>。
+      </p>
+    </div>
+
+    <div class="note">
+      <h2>这一档挡不住什么（诚实的边界）</h2>
+      <p>纯 DOM、不用 Shadow DOM 的前提下，下面这类规则仍会击穿：</p>
+      <pre><code>#app div { margin: 20px }        /* 带 id 的高权重选择器 */
+body div.chat-host &gt; * { ... }   /* 叠了多层的高权重 */</code></pre>
+      <p>
+        这是使用者的选择（"不做样式隔离"），换来的是 UI 可以被完全重构。
+        真的遇到这种宿主时，用 <code>injectStyles: false</code> +
+        <code>getChatStyles()</code> 接管样式表 —— 见 <code>custom.html</code>。
+      </p>
+    </div>
+
+    <ul>
+      <li>点开右下角的按钮，检查：面板圆角、阴影、气泡配色、图标大小是否都正常。</li>
+      <li>检查 <code>&lt;svg&gt;</code> 图标有没有被撑成 96×96 的巨型方块。</li>
+      <li>检查输入框有没有被 magenta 点线边框和 22px 字号污染。</li>
+      <li>检查每条消息时间戳有没有被 <code>text-transform: uppercase</code> 影响（时间戳本来就该是原样）。</li>
+    </ul>
+
+    <script type="module">
+      import { initChat } from '../dist/index.js';
+
+      initChat({
+        title: '抗污染测试',
+        subtitle: '看外观是否与干净页面一致',
+        greeting: ['如果这条气泡的圆角和配色都正常，', '说明宿主样式没串进来。'],
+        timestamps: true,
+        onSend: (text) => '收到：' + text,
+      });
+    </script>
+  </body>
+</html>
