@@ -35,7 +35,7 @@ const localInstances = new Map<string, ChatInstance>();
  *
  * @example
  * ```ts
- * import { initChat } from 'testdemo';
+ * import { initChat } from 'tdw-chat';
  * const chat = initChat({ title: '在线客服' });
  * // 需要时卸载
  * chat.destroy();
@@ -52,7 +52,7 @@ export function initChat(options: ChatOptions = {}): ChatInstance {
   if (!env) {
     if (!options.silent) {
       console.warn(
-        '[testdemo] initChat: 当前环境没有 DOM，返回空操作实例。若是服务端渲染，这是预期行为；' +
+        '[tdw-chat] initChat: 当前环境没有 DOM，返回空操作实例。若是服务端渲染，这是预期行为；' +
           '传入 { silent: true } 可关闭此提示。',
       );
     }

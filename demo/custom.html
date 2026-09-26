@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>testdemo · 重构 UI（不写 !important）</title>
+    <title>tdw-chat · 重构 UI（不写 !important）</title>
     <style>
       body {
         font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
@@ -98,7 +98,7 @@
       <h2>两层扩展点</h2>
 
       <p><strong>① CSS 层：类名 + CSS 变量 + <code>injectStyles: false</code></strong></p>
-      <pre><code>import { initChat, getChatStyles } from 'testdemo';
+      <pre><code>import { initChat, getChatStyles } from 'tdw-chat';
 
 // 自己接管样式表（CSP 场景 / 想自己控制顺序时用）
 const style = document.createElement('style');

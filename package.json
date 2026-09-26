@@ -1,7 +1,7 @@
 {
-  "name": "testdemo",
+  "name": "tdw-chat",
   "version": "0.1.0",
-  "description": "A minimal TypeScript package: dual ESM + CJS build, consumable from npm or directly from git.",
+  "description": "零依赖、框架无关的悬浮对话组件：一行 initChat() 在页面上挂出悬浮按钮与对话弹窗，ESM + CJS 双格式，UI 可用 CSS 完全重构。",
   "license": "MIT",
   "type": "module",
   "engines": {
@@ -34,11 +34,21 @@
     "prepublishOnly": "npm run typecheck && npm run build"
   },
   "keywords": [
-    "demo",
+    "chat",
+    "chat-widget",
+    "floating-button",
+    "livechat",
+    "customer-support",
+    "widget",
+    "framework-agnostic",
+    "zero-dependency",
     "typescript",
     "esm",
-    "cjs"
+    "cjs",
+    "对话组件",
+    "客服"
   ],
+  "homepage": "https://github.com/jianghongjiao/testDemo#readme",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/jianghongjiao/testDemo.git"

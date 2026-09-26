@@ -1,4 +1,4 @@
-# testdemo
+# tdw-chat
 
 一个**零依赖、框架无关**的悬浮对话按钮组件。使用者在页面里调一次 `initChat()`，右下角就出现一个悬浮按钮，点击展开对话弹窗。
 
@@ -8,17 +8,26 @@
 
 ## 安装
 
-**从 git 安装**（还没发布到 npm 时可用）：
+```bash
+npm install tdw-chat
+```
+
+```ts
+import { initChat } from 'tdw-chat';
+
+initChat({ title: '在线客服' });
+```
+
+### 从 git 安装（想跟最新提交，或包还没发布时）
 
 ```bash
-# 推荐：公开仓库，使用者不需要 GitHub 账号或密钥
 npm install git+https://github.com/jianghongjiao/testDemo.git
 ```
 
 装完后 `package.json` 里的记录会被 npm 规范化成简写形式，这是正常的、不影响使用：
 
 ```json
-"dependencies": { "testdemo": "github:jianghongjiao/testDemo" }
+"dependencies": { "tdw-chat": "github:jianghongjiao/testDemo" }
 ```
 
 > 也支持 SSH（要求使用者自己的 GitHub 账号已配好 key）：
@@ -26,6 +35,11 @@ npm install git+https://github.com/jianghongjiao/testDemo.git
 
 > 用 git 方式安装时，npm 会自动执行本包的 `prepare` 脚本，在**使用者机器上**现场构建出
 > `dist/`，所以 `dist/` 不需要提交到仓库 —— 代价是安装时多花几秒装 devDependencies。
+
+> **⚠️ 沙箱 / 受限环境请优先用 npm 安装。** 部分平台（如飞书妙搭）的沙箱只放行
+> npm registry，不放行 `github.com`；另有一些环境会用 `--ignore-scripts` 或企业策略
+> 禁掉安装脚本，那样 `prepare` 不会执行，装完就没有 `dist/`。这些情况 git 方式都装不了，
+> 但 `npm install tdw-chat` 可以。
 
 <details>
 <summary>踩过的坑：npm 的 <code>github:</code> 简写走的是 HTTPS 还是 SSH？</summary>
@@ -44,29 +58,15 @@ npm install git+https://github.com/jianghongjiao/testDemo.git
 HTTPS 地址，撞上了当时的网络问题 —— 和 npm 的简写没关系。
 
 更老的 npm 版本行为可能不同。若使用者报 `Permission denied (publickey)`，让他把
-`"testdemo": "git+https://github.com/jianghongjiao/testDemo.git"` 手写进 `package.json`
+`"tdw-chat": "git+https://github.com/jianghongjiao/testDemo.git"` 手写进 `package.json`
 再 `npm install`（**不要**用 `npm install <url>`，那会被 npm 改写回简写形式）。
 
 </details>
 
-**从 npm 安装**：
-
-> ⚠️ **目前不可用 —— 本包尚未发布到 npm。**
->
-> 而且 `testdemo` 这个名字**已经被别人占用**（npm 上是 `tugenhua` 的 `0.0.1`，
-> 描述 `node package test`，看起来是随手占的），所以按现在 `package.json` 里的名字
-> **发不出去**。要发布必须先改名或改用 scope，见文末「发布到 npm」。
->
-> 在那之前，请用上面的 git 方式安装。仓库是公开的，不需要 GitHub 账号或密钥。
-
-```bash
-npm install testdemo   # ← 现在跑这条装到的会是别人的包，不是本项目
-```
-
 ## 快速开始
 
 ```ts
-import { initChat } from 'testdemo';
+import { initChat } from 'tdw-chat';
 
 initChat({ title: '在线客服' });
 ```
@@ -178,7 +178,7 @@ initChat({ key: 'sales', position: 'bottom-left' });
 **严格 CSP 或病态宿主样式**下，自己接管样式表：
 
 ```ts
-import { initChat, getChatStyles } from 'testdemo';
+import { initChat, getChatStyles } from 'tdw-chat';
 
 const style = document.createElement('style');
 style.textContent = getChatStyles(); // 构建期写进自己的 CSS 也行
@@ -224,7 +224,7 @@ initChat({
 组件在无 DOM 环境下**不抛异常**，返回一个空操作实例：
 
 ```ts
-import { initChat } from 'testdemo';
+import { initChat } from 'tdw-chat';
 
 const chat = initChat({ silent: true }); // 不传 silent 会 console.warn 一次
 chat.isMounted;   // false
@@ -300,38 +300,40 @@ npm pack --dry-run   # 确认 demo/ 未进包、dist 全在
 
 ## 发布到 npm
 
-**前置：`testdemo` 这个名字已被他人占用**，所以发布前必须先决定新名字（改
-`package.json` 的 `name`，同时同步 README 里的安装示例）：
-
-```
-tdw-chat            实测可用
-float-chat-widget   实测可用
-testdemo-chat       实测可用
-@<你的用户名>/testdemo   用 scope 保留原名
-```
-
-发布步骤：
+包名是 `tdw-chat`（不带 scope，实测未被占用，已写进 `package.json`）。
 
 ```bash
-npm login            # 需要你自己的账号密码 / 2FA
-npm whoami           # 确认登录成功
-npm publish --access public
+# ① 登录时必须显式指定官方 registry！
+#    本机 npm 的 registry 是 registry.npmmirror.com（淘宝镜像），
+#    那是只读镜像，不接受发布，直接 npm publish 会失败
+npm login --registry=https://registry.npmjs.org
+npm whoami --registry=https://registry.npmjs.org
+
+# ② 先干跑一遍：完整走打包和校验，但不真正上传
+npm publish --dry-run --registry=https://registry.npmjs.org
+
+# ③ 真发布
+npm publish --registry=https://registry.npmjs.org
 ```
 
 `prepublishOnly` 会在发布前自动跑类型检查和构建，所以不会发出没构建的包。
 
-关于 `--access public`：**它只对带 scope 的包名有意义。**
+发布后 **npmmirror 会自动同步**（通常几分钟内），国内环境和用淘宝源的项目就能直接
+`npm install tdw-chat` 了。急着用可以去 `https://npmmirror.com/sync/tdw-chat` 手动触发一次。
 
-| 包名形式 | 发布后的可见性 |
-| --- | --- |
-| `tdw-chat`（不带 scope） | 本来就是公开的，这个 flag 是多余的（写了无害） |
-| `@你/testdemo`（带 scope） | **默认 restricted 私有**，必须加 `--access public` 才公开 |
-
-已经发布了想事后改可见性：`npm access set status=public <包名>`
-（npm 10 里老的 `npm access public` 写法已移除）。
+> 关于 `--access public`：**它只对带 scope 的包名有意义**，`tdw-chat` 不带 scope，
+> 发布出来本来就是公开的，不需要加（加了也无害）。
+>
+> | 包名形式 | 发布后的可见性 |
+> | --- | --- |
+> | `tdw-chat`（不带 scope） | 本来就公开 |
+> | `@你/xxx`（带 scope） | **默认 restricted 私有**，必须加 `--access public` 才公开 |
+>
+> 已经发布了想事后改可见性：`npm access set status=public <包名>`
+> （npm 10 里老的 `npm access public` 写法已移除）。
 
 > 发布是**单向**的：`npm unpublish` 有 72 小时限制，且名字会被永久保留不可再用。
-> 想先试水的话，`npm publish --dry-run` 能完整走一遍打包和校验但不真正上传。
+> 所以务必先跑 `--dry-run`。
 
 ## License
 

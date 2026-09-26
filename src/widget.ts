@@ -954,7 +954,7 @@ export class ChatWidget implements ChatInstance {
   private failMount(): void {
     if (!this.opts.silent) {
       console.warn(
-        '[testdemo] initChat: 找不到挂载点，组件未挂载。请检查 mount 选项指向的元素是否存在。',
+        '[tdw-chat] initChat: 找不到挂载点，组件未挂载。请检查 mount 选项指向的元素是否存在。',
       );
     }
     // ready 必须 resolve，不能永挂起 —— 否则 await chat.ready 的调用方会一直等下去

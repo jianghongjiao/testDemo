@@ -15,7 +15,7 @@ import type { ChatInstance } from './types';
  * 实例的形状由公开的 `ChatInstance` 接口保证，所以跨副本拿到对象再调用是安全的。
  * `destroy()` 会移除根节点，因此已销毁的实例不会被查到。
  */
-export const INSTANCE_KEY = Symbol.for('testdemo.chat.instance');
+export const INSTANCE_KEY = Symbol.for('tdw-chat.instance');
 
 export function findExistingInstance(doc: Document, key: string): ChatInstance | null {
   // 遍历比对属性值，而不是拼 `[data-tdw-key="..."]` 选择器 ——
