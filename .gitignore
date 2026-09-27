@@ -3,3 +3,7 @@ dist/
 *.log
 *.tgz
 .DS_Store
+
+# 本地 npm 配置。里面可能有 _authToken，提交上去就是泄露
+# —— npm 还会把检测到的泄露 token 自动吊销，等于既丢了凭据又坏了发布
+.npmrc
