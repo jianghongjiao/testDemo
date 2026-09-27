@@ -50,10 +50,10 @@ jobs:
 
       - name: 保证 npm CLI 支持 trusted publishing
         run: |
-          # 下限是 npm 11.5.1（Node 24.0/24.1 自带的 npm 还低于它，所以不能只靠
-          # node-version: 24），这里显式升到 latest，再把版本号钉死 —— 否则失败形式是
-          # "需要先登录"，与真实原因（npm 太旧，压根没有 OIDC 代码）完全对不上
-          npm install -g npm@latest
+          # 下限是 npm 11.5.1。不在这里 `npm install -g npm@latest` —— 试过一次，
+          # 升级后紧接着的 `npm ci` 就挂了（大概率是 11 → 12 的全局树混装）。
+          # 好在没必要：node-version: '24' 装到的是 24.21.0，自带 npm 11.19.0，
+          # 早就过线了。所以这里只做**断言**，不合格就带着明确信息失败。
           echo "node $(node --version) / npm $(npm --version)"
           node -e '
             const min = [11, 5, 1];
@@ -92,6 +92,23 @@ jobs:
           fi
           echo "dist 零 import ✓"
           ls -l dist
+
+      # 这一步是把"静默失败"变成"显式失败"。
+      # npm CLI 的 oidc() 把换 token 的失败原因全吞了（只在 verbose 日志里留一句），
+      # 于是配置错位时你看到的是 ENEEDAUTH「需要先登录」或 E404「找不到包」——
+      # 两个都指向不存在的问题。这里主动干跑一次、把 oidc 那几行捞出来看，
+      # 换到了才算过。成功时 npm 会打 "Successfully retrieved and set token"。
+      - name: 预检 OIDC 能换到 npm token
+        run: |
+          OUTPUT=$(npm publish --dry-run --ignore-scripts --loglevel=verbose 2>&1 || true)
+          echo "$OUTPUT" | grep -i oidc || echo "(没有任何 oidc 日志 —— npm 版本太旧，压根没有这段代码？)"
+          if echo "$OUTPUT" | grep -q "Successfully retrieved and set token"; then
+            echo "OIDC 换 token 成功 ✓"
+          else
+            echo "::error::OIDC 没换到 token。查 npmjs 上 tdw-chat → Settings → Trusted Publisher："
+            echo "::error::repository 要填 jianghongjiao/testDemo，workflow filename 要填 publish.yml"
+            exit 1
+          fi
 
       - name: 发布到 npm
         env:
