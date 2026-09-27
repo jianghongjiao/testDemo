@@ -1,0 +1,119 @@
+name: publish
+
+# 发布靠 npm 的 Trusted Publishing（OIDC）：GitHub 现场签一个短命 token 给 npm，
+# 仓库里不存任何 npm 凭据，也就没有 token 泄露和过期的问题。
+#
+# 前置（在 npmjs.com 上配一次，不配的话下面会以 ENEEDAUTH 失败，见文末）：
+#   npmjs.com → Packages → tdw-chat → Settings → Trusted Publisher
+#     → GitHub Actions：org/repo = jianghongjiao/testDemo，workflow 文件名 = publish.yml
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: '只干跑校验，不真的上传（取消勾选才会真发布）'
+        type: boolean
+        default: true
+
+# contents: read  —— checkout
+# id-token: write —— **trusted publishing 唯一凭据**。少了它，npm CLI 拿不到
+#   ACTIONS_ID_TOKEN_REQUEST_URL/TOKEN，就只能去 ~/.npmrc 找 token，然后报一个
+#   与真实原因无关的 "This command requires you to be logged in to ..."
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      # fetch-depth: 0 —— provenance 要把构建它的那个 commit 和 tag 写进签名，
+      # 浅克隆下解析不到 tag 会生成失败
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          # 发布流水线不用依赖缓存：缓存被投毒的话，其中缓存的 OIDC token 会暴露给
+          # 攻击者的代码。上游文档明确建议发布场景关掉它。
+          package-manager-cache: false
+          # 刻意**不写** registry-url。它会往 .npmrc 里塞一行
+          # `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}`，而这里从没有
+          # NODE_AUTH_TOKEN —— 实测（npm 12.1.0）此时 npm 会把这个**字面量字符串**
+          # 当 token 发给服务端，于是报 E401 Unauthorized。OIDC 一旦配置不匹配，
+          # 真正的错误就被这行 401 盖掉了，排查方向直接跑偏。
+          # registry 交给 package.json 的 publishConfig，那边已经钉死官方源。
+
+      - name: 保证 npm CLI 支持 trusted publishing
+        run: |
+          # 下限是 npm 11.5.1（Node 24.0/24.1 自带的 npm 还低于它，所以不能只靠
+          # node-version: 24），这里显式升到 latest，再把版本号钉死 —— 否则失败形式是
+          # "需要先登录"，与真实原因（npm 太旧，压根没有 OIDC 代码）完全对不上
+          npm install -g npm@latest
+          echo "node $(node --version) / npm $(npm --version)"
+          node -e '
+            const min = [11, 5, 1];
+            const cur = process.argv[1].split(".").map(Number);
+            for (let i = 0; i < min.length; i++) {
+              if (cur[i] > min[i]) process.exit(0);
+              if (cur[i] < min[i]) process.exit(1);
+            }
+          ' "$(npm --version)" || {
+            echo "::error::npm $(npm --version) 太旧，trusted publishing 需要 ≥ 11.5.1"
+            exit 1
+          }
+
+      - name: 校验 tag 与 package.json 版本一致
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          # 防的是这个经典事故：改了代码忘了改版本号，直接打 tag 推上去，
+          # 结果要么发布被"version 已存在"挡下（还好），要么 tag 名字和包内容对不上
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG="$(node -p "require('./package.json').version")"
+          if [ "$TAG" != "$PKG" ]; then
+            echo "::error::tag v$TAG 与 package.json 的 $PKG 不一致，先把版本号改对"
+            exit 1
+          fi
+          echo "版本一致：$PKG"
+
+      # npm ci 会跑 package.json 的 prepare（tsup），dist 在这一步就构建好了。
+      # prepublishOnly 里还会再跑一次 typecheck + build，重复但便宜，留着。
+      - run: npm ci
+
+      - name: 确认 dist 里没有混进 node 内建依赖
+        run: |
+          if grep -nE "from ['\"]" dist/index.js; then
+            echo "::error::dist/index.js 出现了 import，浏览器里会直接报错"
+            exit 1
+          fi
+          echo "dist 零 import ✓"
+          ls -l dist
+
+      - name: 发布到 npm
+        env:
+          # tag 推送 → 真发布；手动触发 → 看 dry_run 勾选框（默认干跑）
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+        run: |
+          ARGS=""
+          if [ "$DRY_RUN" = "true" ]; then
+            ARGS="--dry-run"
+            echo "::notice::干跑模式，不会真的上传"
+          fi
+          # registry 和 access 都取自 package.json 的 publishConfig，
+          # 本机 npmrc 指向 npmmirror 也不会影响这里
+          npm publish --provenance $ARGS
+
+# 失败时看到 "This command requires you to be logged in to https://registry.npmjs.org"
+# （或者上游文档提到的 E404 Not Found），那不是让你去配 token，而是 OIDC 换 token
+# 失败了 —— npm CLI 把换 token 的真实原因吞掉了，只在 verbose 里留痕。按顺序查：
+#   1. npmjs.com 上 tdw-chat 的 Trusted Publisher 配了没，workflow 文件名是不是 publish.yml
+#      （改了文件名要同步改那边，它按文件名匹配）
+#   2. 本文件的 permissions 里 id-token: write 还在不在
+#   3. 包名 / 仓库 owner / repo 名是否和那边填的完全一致
+# npm CLI 的 oidc.js 把换 token 的失败原因埋在了 `npm publish --loglevel=verbose` 的
+# "oidc" 前缀日志里，直接跑一遍 verbose 最快：
+#     npm publish --dry-run --loglevel=verbose 2>&1 | grep -i oidc
