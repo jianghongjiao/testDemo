@@ -5,6 +5,9 @@ import { getChatStyles as readChatStyles } from './styles';
 import { attachInstance, findExistingInstance } from './registry';
 
 export type {
+  CapabilityClientLike,
+  CapabilityExecutorLike,
+  CapabilityParamsContext,
   ChatInstance,
   ChatMessage,
   ChatMessageInput,
@@ -21,6 +24,29 @@ export type {
   SendContext,
   SendResult,
 } from './types';
+
+/**
+ * 能力层再导出。给两类人用：
+ * - 自己接 `onSend` 但想复用重试/abort/合并逻辑的人 —— 直接调 `runCapabilityStream`
+ * - 想在 `onError` 里分辨错误种类的人 —— 用那几个 `isXxxError` 判定
+ *
+ * 判定全部基于 `error.name`，所以**不 import 任何能力 SDK**，本包仍是零依赖。
+ */
+export {
+  DEFAULT_CAPABILITY_ACTION,
+  DEFAULT_CAPABILITY_ID,
+  DEFAULT_SYSTEM_PROMPT,
+  QUOTA_STATUS,
+  buildJ0Params,
+  isAbortError,
+  isExecutionError,
+  isNetworkError,
+  isNotFoundError,
+  isQuotaExhaustedError,
+  isRateLimitError,
+  runCapabilityStream,
+} from './capability';
+export type { CapabilityRunOptions } from './capability';
 
 /**
  * 本模块内的实例快取。**只是快路径**，权威判据在 DOM 上（见 registry.ts）：

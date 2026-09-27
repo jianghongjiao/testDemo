@@ -23,6 +23,13 @@ import {
   icon,
   pick,
 } from './dom';
+import {
+  buildJ0Params,
+  DEFAULT_CAPABILITY_ACTION,
+  DEFAULT_CAPABILITY_ID,
+  isAbortError,
+  runCapabilityStream,
+} from './capability';
 
 const DEFAULT_TEXTS: ChatTexts = {
   title: '在线客服',
@@ -234,7 +241,9 @@ export class ChatWidget implements ChatInstance {
 
     const handler = this.opts.onSend;
     if (!handler) {
-      this.echoReply(content);
+      // onSend 优先；其次是注入的能力客户端；都没有才走内置回声
+      if (this.opts.capability) this.runCapability(content);
+      else this.echoReply(content);
       return;
     }
 
@@ -872,6 +881,15 @@ export class ChatWidget implements ChatInstance {
     if (last && last.role === 'user') {
       this.store.update(last.id, { status: 'error', error: String(error) });
     }
+    this.reportError(error, ctx);
+  }
+
+  /**
+   * 报错收尾：错误横幅 + `onError` + 解除忙碌态。
+   * **标红哪条消息由调用方决定** —— 失败时不一定有那条 user 消息可标。
+   */
+  private reportError(error: unknown, ctx: SendContext): void {
+    if (this.destroyed) return;
     this.errorEl.textContent = this.texts.error;
     this.errorEl.hidden = false;
     this.setBusy(false);
@@ -890,6 +908,93 @@ export class ChatWidget implements ChatInstance {
       this.errorEl.hidden = true;
       this.errorEl.textContent = '';
     }
+  }
+
+  /**
+   * 用宿主注入的能力客户端（如飞书妙搭的 AI 插件）流式生成回复。
+   *
+   * 只有**不传 `onSend`** 时才会走到这里 —— `onSend` 是使用者的完全接管口，
+   * 组件不该在它之外偷偷再调一次模型。
+   *
+   * 与 `onSend` 分支的两点不同：
+   *  1. 先落一条**空的**助手消息再逐次更新同一条，而不是等全文生成完再 push。
+   *     首个 chunk 到达前不落消息，否则生成失败会留下一个空气泡。
+   *  2. 失败时错误标在**助手**消息上（`failSend` 只认最后一条 user 消息，
+   *     而这里最后一条已经是助手消息了）。
+   */
+  private runCapability(content: string): void {
+    const client = this.opts.capability;
+    if (!client) return;
+
+    const controller = new AbortController();
+    this.currentAbort = controller;
+    const ctx: SendContext = {
+      instance: this,
+      messages: this.store.all,
+      signal: controller.signal,
+    };
+
+    // 参数映射由使用者提供，可能抛错（比如依赖了上下文里没有的字段）
+    let params: Record<string, unknown>;
+    try {
+      params = (this.opts.buildCapabilityParams ?? buildJ0Params)(content, {
+        messages: this.store.all,
+      });
+    } catch (error) {
+      this.failSend(error, ctx);
+      return;
+    }
+
+    this.setBusy(true);
+    this.setTyping(true);
+
+    let messageId: string | null = null;
+    const paint = (full: string): void => {
+      if (this.destroyed) return;
+      if (messageId === null) {
+        messageId = this.store.push({ role: 'assistant', content: full }).id;
+        this.setTyping(false);
+        return;
+      }
+      this.store.update(messageId, { content: full });
+    };
+
+    runCapabilityStream({
+      client,
+      capabilityId: this.opts.capabilityId || DEFAULT_CAPABILITY_ID,
+      action: this.opts.capabilityAction || DEFAULT_CAPABILITY_ACTION,
+      params,
+      signal: controller.signal,
+      onChunk: paint,
+      // 重试是从头再生成一遍，退回到"正在输入"比让使用者盯着半截文字更诚实
+      onRetry: () => {
+        if (!this.destroyed) this.setTyping(true);
+      },
+    })
+      .then(() => {
+        if (this.destroyed) return;
+        this.setBusy(false);
+        this.setTyping(false);
+      })
+      .catch((error: unknown) => {
+        // destroy() 里的 abort 会走到这里，此时组件已销毁，静默即可
+        if (this.destroyed) return;
+        // 捕获成局部常量：TS 的窄化不跨闭包，直接判 messageId 拿不到 string
+        const id: string | null = messageId;
+
+        if (isAbortError(error)) {
+          if (id !== null) this.store.remove(id);
+          this.setBusy(false);
+          this.setTyping(false);
+          return;
+        }
+        if (id !== null) {
+          this.store.update(id, { status: 'error', error: String(error) });
+          this.reportError(error, ctx);
+          return;
+        }
+        this.failSend(error, ctx);
+      });
   }
 
   /** 缺省 onSend 时的内置回声回复，保证一行接入就能看到完整交互 */

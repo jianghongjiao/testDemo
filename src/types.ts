@@ -109,6 +109,34 @@ export interface RenderContext {
 /** onSend 允许返回的东西 */
 export type SendResult = void | string | ChatMessageInput | ChatMessageInput[];
 
+/* ------------------------- 能力（AI 插件）注入 ------------------------- */
+
+/**
+ * 能力执行器的结构契约：只描述我们用到的部分。
+ * 飞书妙搭的 `CapabilityExecutor` 天然满足它。
+ */
+export interface CapabilityExecutorLike {
+  /**
+   * 流式调用。逐个 yield 的 chunk 里文本放在 `content` 字段
+   * （妙搭输出 schema 里 `response` 已弃用，`content` 才是推荐字段）。
+   */
+  callStream<T = unknown>(action: string, params?: Record<string, unknown>): AsyncIterable<T>;
+}
+
+/**
+ * 能力客户端的结构契约。飞书妙搭的 `capabilityClient`（来自
+ * `@lark-apaas/client-toolkit`）可以直接赋值给它 —— TypeScript 是结构化类型，
+ * 所以**连类型层面都不需要 import 那个包**，本包的 `.d.ts` 依然零依赖。
+ */
+export interface CapabilityClientLike {
+  load(capabilityId: string): CapabilityExecutorLike;
+}
+
+export interface CapabilityParamsContext {
+  /** 到目前为止的全部消息（含刚追加的那条用户消息） */
+  readonly messages: readonly ChatMessage[];
+}
+
 export interface ChatOptions {
   /**
    * 实例键。同一个 key 重复调用 initChat 返回同一实例并 update(options)，
@@ -161,6 +189,43 @@ export interface ChatOptions {
    * 真实项目在这里接自己的后端。
    */
   onSend?: (text: string, ctx: SendContext) => SendResult | Promise<SendResult>;
+
+  /**
+   * 注入能力客户端（如飞书妙搭的 `capabilityClient`）。注入后，**在不传 `onSend` 时**
+   * 组件直接用它流式生成回复，替代内置回声。
+   *
+   * **必须由宿主的应用注入**，本包自己不 import 任何能力 SDK。理由不是洁癖：
+   * 一旦包内自带一份，页面里就会出现两份客户端实例，auth / session / 计费上下文
+   * 各自为政，症状极难排查。
+   *
+   * @example
+   * ```ts
+   * import { capabilityClient } from '@lark-apaas/client-toolkit';
+   * initChat({ capability: capabilityClient, capabilityId: 'J0' });
+   * ```
+   */
+  capability?: CapabilityClientLike;
+
+  /**
+   * 能力实例 ID。换插件改这里。
+   * @default "J0"
+   */
+  capabilityId?: string;
+
+  /**
+   * action 名。
+   * @default "textGenerate"
+   */
+  capabilityAction?: string;
+
+  /**
+   * 用户输入 → 插件入参的映射。
+   * 默认按 `J0`（`@official-plugins/ai-text-generate`）的 schema 生成
+   * `{ System, User, Data, SessionMsg }`。**换插件时必须覆盖它** ——
+   * 参数名写错会被判参数校验失败，而那个错误在 SDK 里被包成 ExecutionError，
+   * 表现是"执行出错"而不是"参数错了"，非常难查。
+   */
+  buildCapabilityParams?: (text: string, ctx: CapabilityParamsContext) => Record<string, unknown>;
 
   onOpen?: () => void;
   onClose?: () => void;

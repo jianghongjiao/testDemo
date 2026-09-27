@@ -1,6 +1,6 @@
 {
   "name": "tdw-chat",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "零依赖、框架无关的悬浮对话组件：一行 initChat() 在页面上挂出悬浮按钮与对话弹窗，ESM + CJS 双格式，UI 可用 CSS 完全重构。",
   "license": "MIT",
   "type": "module",

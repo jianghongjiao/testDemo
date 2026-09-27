@@ -1,0 +1,966 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>tdw-chat · 能力注入演示与断言</title>
+    <style>
+      body {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        margin: 0;
+        padding: 32px 24px 64px;
+        font-size: 13px;
+        line-height: 1.6;
+        color: #111827;
+      }
+      h1 { font-size: 16px; margin: 0 0 4px; font-family: -apple-system, sans-serif; }
+      h2 { font-size: 14px; margin: 32px 0 8px; font-family: -apple-system, sans-serif; }
+      #summary {
+        font-size: 15px;
+        font-weight: 700;
+        padding: 10px 14px;
+        border-radius: 8px;
+        display: inline-block;
+        margin: 16px 0 20px;
+      }
+      #summary.pending { background: #f3f4f6; color: #6b7280; }
+      #summary.pass { background: #dcfce7; color: #166534; }
+      #summary.fail { background: #fee2e2; color: #991b1b; }
+      ol { padding-left: 26px; margin: 0; }
+      li { margin-bottom: 3px; }
+      li.pass::marker { color: #16a34a; }
+      li.fail { background: #fef2f2; }
+      li.fail::marker { color: #dc2626; }
+      li.skip::marker { color: #d97706; }
+      .why { color: #dc2626; display: block; padding-left: 4px; }
+      code { background: #f3f4f6; padding: 1px 4px; border-radius: 3px; }
+      p.hint { max-width: 760px; color: #6b7280; }
+      .controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+        margin: 12px 0 4px;
+      }
+      .controls button,
+      .controls select {
+        font: inherit;
+        padding: 6px 10px;
+        border: 1px solid #d1d5db;
+        border-radius: 6px;
+        background: #fff;
+        cursor: pointer;
+      }
+      .controls button:hover { background: #f9fafb; }
+      #log {
+        max-width: 760px;
+        max-height: 200px;
+        overflow: auto;
+        background: #0f172a;
+        color: #cbd5e1;
+        border-radius: 8px;
+        padding: 10px 12px;
+        margin-top: 10px;
+        white-space: pre-wrap;
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>能力（AI 插件）注入：演示 + 断言</h1>
+    <p class="hint">
+      右下角是一个接在<strong>假的能力客户端</strong>上的对话组件 —— 它<strong>不传
+      <code>onSend</code></strong>，只注入 <code>capability</code>，回复由假客户端逐字流式吐出。
+      假客户端按真 SDK 的形状实现（<code>load(id).callStream(action, params)</code>、
+      错误类的 <code>name</code> 在构造函数里设好），所以这里的断言对真
+      <code>@lark-apaas/client-toolkit</code> 成立。
+    </p>
+    <p class="hint">
+      ⚠️ 它验证不了<strong>真实网络与鉴权</strong>：真实调用还要 <code>acquireUploadUrl</code>
+      / <code>acquireDownloadUrl</code> / <code>central</code> 配置，且 <code>J0</code> 的
+      插件实例 ID 只在你那个妙搭应用里存在。接真 SDK 请在自己的应用里跑。
+    </p>
+
+    <h2>实时演示</h2>
+    <div class="controls">
+      <select id="mode">
+        <option value="ok">正常流式</option>
+        <option value="partial">吐一半后失败（消息标红）</option>
+        <option value="boom">立刻失败（标红用户消息，不留空气泡）</option>
+        <option value="retry">先网络错误，重试后成功</option>
+      </select>
+      <button type="button" id="send">发一条</button>
+      <button type="button" id="clear">清空消息</button>
+    </div>
+    <div id="log">（假客户端的调用日志）</div>
+
+    <h2>断言</h2>
+    <div id="summary" class="pending">运行中…</div>
+    <ol id="results"></ol>
+
+    <script type="module">
+      import {
+        DEFAULT_CAPABILITY_ACTION,
+        DEFAULT_CAPABILITY_ID,
+        DEFAULT_SYSTEM_PROMPT,
+        QUOTA_STATUS,
+        buildJ0Params,
+        initChat,
+        isAbortError,
+        isExecutionError,
+        isNetworkError,
+        isNotFoundError,
+        isQuotaExhaustedError,
+        isRateLimitError,
+        runCapabilityStream,
+      } from '../dist/index.js';
+
+      /* ==================================================================
+         假的能力 SDK。形状与 @lark-apaas/client-capability 的产物一一对应：
+         错误类在构造函数里设 this.name，业务码放 code，HTTP 码放 statusCode。
+         我们的判定全走 name（因为不能 import 真包），所以这份假货足以验证判定。
+         ================================================================== */
+
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+      class CapabilityError extends Error {
+        constructor(message, code, statusCode) {
+          super(message);
+          this.name = 'CapabilityError';
+          this.code = code;
+          this.statusCode = statusCode;
+        }
+      }
+      class ExecutionError extends CapabilityError {
+        constructor(message, statusCode) {
+          super(message, 'k_ec_cap_005', statusCode);
+          this.name = 'ExecutionError';
+        }
+      }
+      class NetworkError extends CapabilityError {
+        constructor(message) {
+          super(message, 'NETWORK_ERROR');
+          this.name = 'NetworkError';
+        }
+      }
+      class RateLimitError extends CapabilityError {
+        constructor(rateLimitCode, rateLimitMessage, statusCode) {
+          super(rateLimitMessage, 'RATE_LIMIT_EXCEEDED', statusCode);
+          this.name = 'RateLimitError';
+          this.rateLimitCode = rateLimitCode;
+          this.rateLimitMessage = rateLimitMessage;
+        }
+      }
+      class CapabilityNotFoundError extends CapabilityError {
+        constructor(id) {
+          super('capability not found: ' + id, 'k_ec_cap_001', 404);
+          this.name = 'CapabilityNotFoundError';
+        }
+      }
+
+      /** 逐个 yield { content }；可选延迟。hooks.completed / hooks.closed 用来观察收尾 */
+      async function* chunks(list, delayMs, hooks) {
+        try {
+          for (const piece of list) {
+            if (delayMs) await sleep(delayMs);
+            yield { content: piece };
+          }
+          if (hooks) hooks.completed = true;
+        } finally {
+          if (hooks) hooks.closed = (hooks.closed || 0) + 1;
+        }
+      }
+
+      /**
+       * 一个能**同步**记账 return() 调用的假流。
+       * 用它而不是 async generator：async generator 被卡在内部 await 上时，
+       * return() 会被排队，观察不到"调用方到底有没有请求关流"。
+       */
+      function spyStream(list, delayMs = 0) {
+        const state = { returns: 0, nexts: 0 };
+        let i = 0;
+        const iterator = {
+          next: async () => {
+            state.nexts++;
+            if (delayMs) await sleep(delayMs);
+            if (i >= list.length) return { value: undefined, done: true };
+            return { value: { content: list[i++] }, done: false };
+          },
+          return: async () => {
+            // 同步记账：这样断言不依赖生成器内部的时序
+            state.returns++;
+            return { value: undefined, done: true };
+          },
+        };
+        return { state, iterable: { [Symbol.asyncIterator]: () => iterator } };
+      }
+
+      /** 先正常 yield，最后抛错 —— 用来验证"吐了一半才失败" */
+      async function* partialThenFail(list, delayMs, error) {
+        for (const piece of list) {
+          if (delayMs) await sleep(delayMs);
+          yield { content: piece };
+        }
+        throw error;
+      }
+
+      async function* boom(error) {
+        throw error;
+        yield { content: '' }; // 不可达，仅为让它成为 generator
+      }
+
+      const journal = [];
+      function log(line) {
+        journal.push(line);
+        const el = document.getElementById('log');
+        el.textContent = journal.slice(-12).join('\n');
+        el.scrollTop = el.scrollHeight;
+      }
+
+      /**
+       * 造一个客户端。run(ctx) 返回 AsyncIterable，被调用几次就是第几次尝试。
+       * load() / callStream() 都记进 state，断言可以直接看调用次数。
+       */
+      function makeClient(run) {
+        const state = { loads: [], calls: [] };
+        const client = {
+          load(capabilityId) {
+            state.loads.push(capabilityId);
+            return {
+              callStream(action, params) {
+                state.calls.push({ capabilityId, action, params });
+                return run({ attempt: state.calls.length, capabilityId, action, params });
+              },
+              call() {
+                throw new Error('本 demo 只覆盖 callStream');
+              },
+            };
+          },
+        };
+        return { client, state };
+      }
+
+      /* ---- 演示用的客户端：行为由 #mode 决定 ---- */
+
+      const demoState = { calls: 0, hooks: null };
+      const demo = makeClient(({ attempt, capabilityId, action, params }) => {
+        demoState.calls++;
+        log(
+          '#' + attempt + ' ' + capabilityId + '.' + action +
+            ' User=' + JSON.stringify(params && params.User),
+        );
+        const mode = document.getElementById('mode').value;
+        // 不带 statusCode，跟真 SDK 的流内错误一致（`throw new ExecutionError(err.message)`）
+        if (mode === 'boom') return boom(new ExecutionError('参数校验失败'));
+        if (mode === 'partial') {
+          // 用 400 而不是 5xx：5xx 会触发重试，演示会变成"等三秒再失败"，看不清重点
+          return partialThenFail(['这段会吐出来，', '然后失败。'], 90, new ExecutionError('执行出错', 400));
+        }
+        if (mode === 'retry' && attempt === 1) return boom(new NetworkError('连接被重置'));
+        // 回显式回复，切成小片模拟 token 流
+        const text = '收到：' + String((params && params.User) || '') + '。这是假客户端逐字吐出来的回复。';
+        const pieces = [];
+        for (let i = 0; i < text.length; i += 2) pieces.push(text.slice(i, i + 2));
+        return chunks(pieces, 45, demoState.hooks);
+      });
+
+      const demoChat = initChat({
+        key: 'cap-demo',
+        title: '能力注入演示',
+        subtitle: '假客户端 · 逐字流式',
+        greeting: '随便说点什么，回复由假的能力客户端流式生成。',
+        defaultOpen: true,
+        capability: demo.client,
+        capabilityId: 'J0',
+      });
+
+      // 每个流的 hooks 都要是全新的对象，否则 completed/closed 会互相污染
+      let sendSeq = 0;
+      document.getElementById('send').addEventListener('click', () => {
+        sendSeq++;
+        demoState.hooks = {};
+        demoChat.sendMessage('第 ' + sendSeq + ' 条测试消息');
+      });
+      document.getElementById('clear').addEventListener('click', () => {
+        journal.length = 0;
+        document.getElementById('log').textContent = '（假客户端的调用日志）';
+        demoChat.clearMessages();
+      });
+
+      /* ==================================================================
+         断言
+         ================================================================== */
+
+      const resultsEl = document.getElementById('results');
+      const summaryEl = document.getElementById('summary');
+      const list = [];
+      const cleanups = [];
+
+      async function test(name, fn) {
+        try {
+          const why = await fn();
+          if (why === 'SKIP') list.push({ name, status: 'skip' });
+          else if (typeof why === 'string') list.push({ name, status: 'fail', why });
+          else list.push({ name, status: 'pass' });
+        } catch (error) {
+          list.push({
+            name,
+            status: 'fail',
+            why: String(error && error.message ? error.message : error),
+          });
+        }
+      }
+
+      const signal = () => new AbortController();
+      const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+
+      /** 轮询等待某个条件成立。UI 路径是异步的，断言不能靠固定 sleep 猜时长 */
+      async function waitFor(predicate, ms = 3000) {
+        const started = Date.now();
+        while (Date.now() - started < ms) {
+          if (predicate()) return true;
+          await delay(15);
+        }
+        return predicate();
+      }
+
+      /* ---------- 一、runCapabilityStream 直接调用 ---------- */
+
+      await test('流式：返回全文，onChunk 每次收到的是「到目前为止的全文」', async () => {
+        const { client } = makeClient(() => chunks(['a', 'b', 'c'], 0));
+        const seen = [];
+        const full = await runCapabilityStream({
+          client,
+          capabilityId: 'J0',
+          action: 'textGenerate',
+          params: {},
+          signal: signal().signal,
+          onChunk: (t) => seen.push(t),
+          flushMs: 0,
+        });
+        if (full !== 'abc') return '返回 ' + JSON.stringify(full);
+        if (seen.join('|') !== 'a|ab|abc') return 'onChunk 序列是 ' + JSON.stringify(seen);
+      });
+
+      await test('flushMs 合并：回调次数少于 chunk 数（默认 50ms 就是为这个）', async () => {
+        const pieces = Array.from({ length: 40 }, (_, i) => String(i));
+        const { client } = makeClient(() => chunks(pieces, 0));
+        let n = 0;
+        const full = await runCapabilityStream({
+          client,
+          capabilityId: 'J0',
+          action: 'textGenerate',
+          params: {},
+          signal: signal().signal,
+          onChunk: () => { n++; },
+          flushMs: 50,
+        });
+        if (full !== pieces.join('')) return '正文不对';
+        if (n === 0) return '一次都没回调（短内容收尾补发失效）';
+        if (n >= pieces.length) return '回调 ' + n + ' 次，没有合并（chunk ' + pieces.length + ' 个）';
+      });
+
+      await test('flushMs: 0 表示不合并，每个有内容的 chunk 都回调', async () => {
+        const { client } = makeClient(() => chunks(['x', 'y', 'z'], 0));
+        let n = 0;
+        await runCapabilityStream({
+          client,
+          capabilityId: 'J0',
+          action: 'textGenerate',
+          params: {},
+          signal: signal().signal,
+          onChunk: () => { n++; },
+          flushMs: 0,
+        });
+        if (n !== 3) return '回调 ' + n + ' 次，期望 3';
+      });
+
+      await test('空 content 的 chunk 被跳过，不产生多余回调', async () => {
+        const { client } = makeClient(() => chunks(['a', '', 'b'], 0));
+        let n = 0;
+        const full = await runCapabilityStream({
+          client,
+          capabilityId: 'J0',
+          action: 'textGenerate',
+          params: {},
+          signal: signal().signal,
+          onChunk: () => { n++; },
+          flushMs: 0,
+        });
+        if (full !== 'ab') return '正文 ' + JSON.stringify(full);
+        if (n !== 2) return '回调 ' + n + ' 次，期望 2';
+      });
+
+      await test('失败前已生成的部分不会被丢弃（半截回复要留在界面上）', async () => {
+        const { client } = makeClient(() =>
+          partialThenFail(['半截'], 0, new ExecutionError('连接断了', 500)),
+        );
+        const seen = [];
+        let error = null;
+        try {
+          await runCapabilityStream({
+            client,
+            capabilityId: 'J0',
+            action: 'textGenerate',
+            params: {},
+            signal: signal().signal,
+            onChunk: (t) => seen.push(t),
+            flushMs: 50,
+            retries: 0,
+          });
+        } catch (e) {
+          error = e;
+        }
+        if (!isExecutionError(error)) return '抛出来的不是原来那个错误';
+        if (seen.join('|') !== '半截') return '部分内容丢了，回调序列 ' + JSON.stringify(seen);
+      });
+
+      await test('中途 abort：抛 name 为 AbortError 的错，且一定请求了关流', async () => {
+        const { state, iterable } = spyStream(['1', '2', '3', '4', '5'], 30);
+        const { client } = makeClient(() => iterable);
+        const ctrl = signal();
+        const running = runCapabilityStream({
+          client,
+          capabilityId: 'J0',
+          action: 'textGenerate',
+          params: {},
+          signal: ctrl.signal,
+          onChunk: () => {},
+          flushMs: 0,
+        });
+        await delay(10);
+        ctrl.abort();
+        let error = null;
+        try {
+          await running;
+          return 'abort 之后竟然正常返回了';
+        } catch (e) {
+          error = e;
+        }
+        if (!isAbortError(error)) return '抛的不是 AbortError，name = ' + (error && error.name);
+        if (state.returns !== 1) return 'iterator.return() 被调了 ' + state.returns + ' 次，期望 1';
+      });
+
+      await test('正常跑完也会关流，且不会多关一次', async () => {
+        const { state, iterable } = spyStream(['a', 'b']);
+        const { client } = makeClient(() => iterable);
+        const full = await runCapabilityStream({
+          client,
+          capabilityId: 'J0',
+          action: 'textGenerate',
+          params: {},
+          signal: signal().signal,
+          onChunk: () => {},
+          flushMs: 0,
+        });
+        if (full !== 'ab') return '正文 ' + JSON.stringify(full);
+        if (state.returns !== 1) return 'return() 调了 ' + state.returns + ' 次，期望 1';
+      });
+
+      await test('abort 立刻返回：生成器卡在内部 await 上也不等它', async () => {
+        // 这个流要 1.2 秒后才吐出第一个 chunk。若 abort 靠下一个 chunk 驱动、
+        // 或者 await 了 iterator.return()，这里就会等满 1.2 秒。
+        const { client } = makeClient(() => chunks(['first', 'second'], 1200));
+        const ctrl = signal();
+        const started = Date.now();
+        const running = runCapabilityStream({
+          client,
+          capabilityId: 'J0',
+          action: 'textGenerate',
+          params: {},
+          signal: ctrl.signal,
+          onChunk: () => {},
+        });
+        await delay(30);
+        ctrl.abort();
+        try {
+          await running;
+          return '应当抛 AbortError';
+        } catch (e) {
+          if (!isAbortError(e)) return 'name = ' + (e && e.name);
+        }
+        const took = Date.now() - started;
+        if (took > 600) return 'abort 后花了 ' + took + 'ms 才返回 —— 在等流自己结束';
+      });
+
+      await test('卡在 await 上的流：关流请求发得早，实际清理稍后一定发生', async () => {
+        const hooks = { closed: 0 };
+        const { client } = makeClient(() => chunks(['first', 'second'], 400, hooks));
+        const ctrl = signal();
+        const running = runCapabilityStream({
+          client,
+          capabilityId: 'J0',
+          action: 'textGenerate',
+          params: {},
+          signal: ctrl.signal,
+          onChunk: () => {},
+        });
+        await delay(20);
+        ctrl.abort();
+        try {
+          await running;
+        } catch {
+          /* 预期就是 AbortError */
+        }
+        // 此刻生成器还没真正结束（它正卡在 400ms 的 sleep 上），所以不 await 的代价就是这里还是 0
+        await delay(700);
+        if (hooks.closed !== 1) {
+          return '清理始终没发生（closed=' + hooks.closed + '）—— 那就是真的泄漏了';
+        }
+      });
+
+      await test('NetworkError 会重试，重试成功后返回正文，onRetry 次数正确', async () => {
+        const retries = [];
+        const { client, state } = makeClient(({ attempt }) =>
+          attempt < 3 ? boom(new NetworkError('reset')) : chunks(['ok'], 0),
+        );
+        const full = await runCapabilityStream({
+          client,
+          capabilityId: 'J0',
+          action: 'textGenerate',
+          params: {},
+          signal: signal().signal,
+          onChunk: () => {},
+          retries: 3,
+          retryDelayMs: 5,
+          onRetry: (n) => retries.push(n),
+        });
+        if (full !== 'ok') return '正文 ' + JSON.stringify(full);
+        if (state.calls.length !== 3) return '调用 ' + state.calls.length + ' 次，期望 3';
+        if (retries.join(',') !== '1,2') return 'onRetry 参数 ' + JSON.stringify(retries);
+      });
+
+      await test('ExecutionError 5xx 会重试（服务端抖动）', async () => {
+        const { client, state } = makeClient(({ attempt }) =>
+          attempt === 1 ? boom(new ExecutionError('内部错误', 503)) : chunks(['ok'], 0),
+        );
+        await runCapabilityStream({
+          client,
+          capabilityId: 'J0',
+          action: 'textGenerate',
+          params: {},
+          signal: signal().signal,
+          onChunk: () => {},
+          retries: 2,
+          retryDelayMs: 5,
+        });
+        if (state.calls.length !== 2) return '调用 ' + state.calls.length + ' 次，期望 2（重试一次）';
+      });
+
+      await test('ExecutionError 4xx 【不】重试 —— 参数写错重试一万次也一样', async () => {
+        const { client, state } = makeClient(() => boom(new ExecutionError('参数校验失败', 400)));
+        let error = null;
+        try {
+          await runCapabilityStream({
+            client,
+            capabilityId: 'J0',
+            action: 'textGenerate',
+            params: {},
+            signal: signal().signal,
+            onChunk: () => {},
+            retries: 3,
+            retryDelayMs: 5,
+          });
+        } catch (e) {
+          error = e;
+        }
+        if (!isExecutionError(error)) return '抛的不是 ExecutionError，name = ' + (error && error.name);
+        if (state.calls.length !== 1) return '调用了 ' + state.calls.length + ' 次，4xx 不该重试';
+      });
+
+      await test('流内错误 + 一个字都没吐 → 不重试（参数写错不该等 5.6 秒）', async () => {
+        // 真 SDK 的流内错误走的是 `throw new ExecutionError(err.message)` —— 没有 statusCode。
+        // 这种错误里"参数校验失败"和"执行出错"长得一模一样，只能靠有没有吐过字区分。
+        const { client, state } = makeClient(() => boom(new ExecutionError('参数校验失败')));
+        let error = null;
+        try {
+          await runCapabilityStream({
+            client,
+            capabilityId: 'J0',
+            action: 'textGenerate',
+            params: {},
+            signal: signal().signal,
+            onChunk: () => {},
+            retries: 3,
+            retryDelayMs: 5,
+          });
+        } catch (e) {
+          error = e;
+        }
+        if (!isExecutionError(error)) return '抛的不是 ExecutionError，name = ' + (error && error.name);
+        if (state.calls.length !== 1) {
+          return '调用了 ' + state.calls.length + ' 次 —— 没吐过字的流内错误被当成了可重试';
+        }
+      });
+
+      await test('流内错误 + 已经吐过字 → 重试（生成中途断了值得重来）', async () => {
+        const { client, state } = makeClient(({ attempt }) =>
+          attempt === 1
+            ? partialThenFail(['半截'], 0, new ExecutionError('连接断了'))
+            : chunks(['重来成功'], 0),
+        );
+        const full = await runCapabilityStream({
+          client,
+          capabilityId: 'J0',
+          action: 'textGenerate',
+          params: {},
+          signal: signal().signal,
+          onChunk: () => {},
+          retries: 2,
+          retryDelayMs: 5,
+        });
+        if (full !== '重来成功') return '正文 ' + JSON.stringify(full);
+        if (state.calls.length !== 2) return '调用 ' + state.calls.length + ' 次，期望 2（重试一次）';
+      });
+
+      await test('限流（RateLimitError 429）会重试', async () => {
+        const { client, state } = makeClient(({ attempt }) =>
+          attempt === 1
+            ? boom(new RateLimitError('k_ec_cap_006', '触发限流', 429))
+            : chunks(['ok'], 0),
+        );
+        await runCapabilityStream({
+          client,
+          capabilityId: 'J0',
+          action: 'textGenerate',
+          params: {},
+          signal: signal().signal,
+          onChunk: () => {},
+          retries: 2,
+          retryDelayMs: 5,
+        });
+        if (state.calls.length !== 2) return '调用 ' + state.calls.length + ' 次，期望 2';
+      });
+
+      await test('额度耗尽不重试 —— QUOTA_STATUS 已按 402 判定', async () => {
+        const quota = new RateLimitError('k_ec_cap_006', '额度已用完', QUOTA_STATUS);
+        if (QUOTA_STATUS !== 402) return 'QUOTA_STATUS = ' + QUOTA_STATUS;
+        if (!isQuotaExhaustedError(quota)) return '402 没被判成额度耗尽';
+        if (isQuotaExhaustedError(new RateLimitError('k_ec_cap_006', '限流', 429))) {
+          return '429 被误判成额度耗尽了 —— 普通限流就没法重试了';
+        }
+        const { client, state } = makeClient(() => boom(quota));
+        try {
+          await runCapabilityStream({
+            client,
+            capabilityId: 'J0',
+            action: 'textGenerate',
+            params: {},
+            signal: signal().signal,
+            onChunk: () => {},
+            retries: 3,
+            retryDelayMs: 5,
+          });
+        } catch (e) {
+          if (!isQuotaExhaustedError(e)) return '抛出来的不是那个额度错误';
+        }
+        if (state.calls.length !== 1) return '调用了 ' + state.calls.length + ' 次，额度耗尽不该重试';
+      });
+
+      await test('CapabilityNotFoundError / ActionNotFoundError 不重试，isNotFoundError 命中', async () => {
+        const { client, state } = makeClient(() => boom(new CapabilityNotFoundError('J0')));
+        let error = null;
+        try {
+          await runCapabilityStream({
+            client,
+            capabilityId: 'J0',
+            action: 'textGenerate',
+            params: {},
+            signal: signal().signal,
+            onChunk: () => {},
+            retries: 3,
+            retryDelayMs: 5,
+          });
+        } catch (e) {
+          error = e;
+        }
+        if (!isNotFoundError(error)) return 'isNotFoundError 没命中，name = ' + (error && error.name);
+        if (state.calls.length !== 1) return '调用了 ' + state.calls.length + ' 次，不该重试';
+      });
+
+      await test('重试用尽后【抛异常】而不是静默返回 undefined', async () => {
+        const { client, state } = makeClient(() => boom(new NetworkError('一直是坏的')));
+        let error = null;
+        try {
+          const value = await runCapabilityStream({
+            client,
+            capabilityId: 'J0',
+            action: 'textGenerate',
+            params: {},
+            signal: signal().signal,
+            onChunk: () => {},
+            retries: 2,
+            retryDelayMs: 5,
+          });
+          return '居然正常返回了：' + JSON.stringify(value);
+        } catch (e) {
+          error = e;
+        }
+        if (!isNetworkError(error)) return '抛出来的不是原来那个错误';
+        if (state.calls.length !== 3) return '尝试 ' + state.calls.length + ' 次，期望 1+2=3';
+      });
+
+      await test('abort 之后的 sleep 会立刻中断，不会走完退避', async () => {
+        const { client } = makeClient(() => boom(new NetworkError('坏')));
+        const ctrl = signal();
+        const started = Date.now();
+        const running = runCapabilityStream({
+          client,
+          capabilityId: 'J0',
+          action: 'textGenerate',
+          params: {},
+          signal: ctrl.signal,
+          onChunk: () => {},
+          retries: 5,
+          retryDelayMs: 3000, // 不退避的话下一次要等 3 秒
+        });
+        await delay(20);
+        ctrl.abort();
+        try {
+          await running;
+        } catch (e) {
+          if (!isAbortError(e)) return 'name = ' + (e && e.name);
+        }
+        const took = Date.now() - started;
+        if (took > 1000) return '退避等待 ' + took + 'ms 才被 abort 打断';
+      });
+
+      await test('isXxxError 全走 error.name 判定，不依赖 instanceof', async () => {
+        // 真 SDK 的错误类在这里是「跨包副本」，instanceof 会失手，name 不会
+        const foreign = {
+          name: 'RateLimitError',
+          code: 'RATE_LIMIT_EXCEEDED',
+          statusCode: 429,
+        };
+        const asError = Object.assign(new Error('x'), foreign);
+        if (!isRateLimitError(asError)) return 'isRateLimitError 漏了';
+        if (isNetworkError(asError)) return 'isNetworkError 误判';
+        if (isExecutionError(asError)) return 'isExecutionError 误判';
+        if (isAbortError(asError)) return 'isAbortError 误判';
+        if (isNotFoundError(asError)) return 'isNotFoundError 误判';
+        if (isRateLimitError(null) || isRateLimitError(undefined) || isRateLimitError('x')) {
+          return '非 Error 入参应当一律返回 false';
+        }
+      });
+
+      await test('buildJ0Params 按 J0 的 schema 生成四个首字母大写的参数', () => {
+        const params = buildJ0Params('你好', { messages: [] });
+        const keys = Object.keys(params).sort().join(',');
+        if (keys !== 'Data,SessionMsg,System,User') return '字段是 ' + keys;
+        if (params.User !== '你好') return 'User = ' + JSON.stringify(params.User);
+        if (params.System !== DEFAULT_SYSTEM_PROMPT) return 'System 不是默认人设';
+        if (params.Data !== '' || params.SessionMsg !== '') return 'Data / SessionMsg 应当是空串';
+      });
+
+      await test('默认常量就是 J0', () => {
+        if (DEFAULT_CAPABILITY_ID !== 'J0') return 'id = ' + DEFAULT_CAPABILITY_ID;
+        if (DEFAULT_CAPABILITY_ACTION !== 'textGenerate') return 'action = ' + DEFAULT_CAPABILITY_ACTION;
+      });
+
+      /* ---------- 二、组件路径：initChat({ capability }) ---------- */
+
+      await test('不传 onSend、只注入 capability 时，回复由能力客户端流式生成', async () => {
+        const { client, state } = makeClient(() => chunks(['流', '式', '回复'], 0));
+        const chat = initChat({ key: 'cap-t1', capability: client, silent: true });
+        cleanups.push(() => chat.destroy());
+        chat.sendMessage('在吗');
+        const ok = await waitFor(() => {
+          const msgs = chat.getMessages();
+          return msgs.length === 2 && msgs[1].content === '流式回复';
+        });
+        if (!ok) {
+          return '最终消息：' + JSON.stringify(chat.getMessages().map((m) => m.content));
+        }
+        if (state.calls.length !== 1) return 'callStream 调了 ' + state.calls.length + ' 次';
+        const call = state.calls[0];
+        if (call.action !== 'textGenerate') return 'action = ' + call.action;
+        if (state.loads[0] !== 'J0') return 'load 的 id = ' + state.loads[0];
+        if (call.params.User !== '在吗') return 'User = ' + JSON.stringify(call.params.User);
+      });
+
+      await test('是逐次更新同一条消息，不是等全文再 push（消息数始终 2）', async () => {
+        const pieces = Array.from({ length: 12 }, (_, i) => 'piece' + i + ' ');
+        const { client } = makeClient(() => chunks(pieces, 40));
+        const chat = initChat({ key: 'cap-t2', capability: client, silent: true });
+        cleanups.push(() => chat.destroy());
+        chat.sendMessage('流式给我看');
+
+        const seen = new Set();
+        let overCount = false;
+        const started = Date.now();
+        while (Date.now() - started < 4000) {
+          const msgs = chat.getMessages();
+          if (msgs.length > 2) overCount = true;
+          if (msgs.length === 2) seen.add(msgs[1].content);
+          if (msgs.length === 2 && msgs[1].content === pieces.join('')) break;
+          await delay(15);
+        }
+        if (overCount) return '中途消息数超过 2 —— 每次更新都 push 了新消息';
+        if (seen.size < 2) return '只观察到 ' + seen.size + ' 个中间状态，看不出流式';
+        const last = chat.getMessages()[1];
+        if (!last || last.content !== pieces.join('')) return '最终正文不对：' + JSON.stringify(last && last.content);
+      });
+
+      await test('传了 onSend 就【不】走 capability（onSend 是使用者的完全接管口）', async () => {
+        const { client, state } = makeClient(() => chunks(['不该被调用'], 0));
+        const chat = initChat({
+          key: 'cap-t3',
+          capability: client,
+          onSend: (text) => 'onSend 的回复：' + text,
+          silent: true,
+        });
+        cleanups.push(() => chat.destroy());
+        chat.sendMessage('走哪条路');
+        await delay(30);
+        if (state.calls.length !== 0) return 'capability 被调用了 ' + state.calls.length + ' 次';
+        const last = chat.getMessages()[chat.getMessages().length - 1];
+        if (!last || last.content !== 'onSend 的回复：走哪条路') {
+          return '回复是 ' + JSON.stringify(last && last.content);
+        }
+      });
+
+      await test('buildCapabilityParams 能覆盖参数映射，并拿到 messages 上下文', async () => {
+        const { client, state } = makeClient(() => chunks(['好'], 0));
+        let gotCtx = null;
+        const chat = initChat({
+          key: 'cap-t4',
+          capability: client,
+          capabilityId: 'custom-instance',
+          capabilityAction: 'customAction',
+          buildCapabilityParams: (text, ctx) => {
+            gotCtx = ctx;
+            return { query: text, history: ctx.messages.length };
+          },
+          silent: true,
+        });
+        cleanups.push(() => chat.destroy());
+        chat.sendMessage('自定义参数');
+        await waitFor(() => state.calls.length === 1);
+        const call = state.calls[0];
+        if (!call) return '能力没被调用';
+        if (call.capabilityId !== 'custom-instance') return 'capabilityId = ' + call.capabilityId;
+        if (call.action !== 'customAction') return 'action = ' + call.action;
+        if (call.params.query !== '自定义参数') return 'query = ' + JSON.stringify(call.params.query);
+        // 映射发生在首个 chunk 之前，此时助手消息还没落，所以只应有那条用户消息
+        if (call.params.history !== 1) return 'history = ' + call.params.history + '，期望 1';
+        if (!gotCtx || !Array.isArray(gotCtx.messages)) return 'ctx.messages 不是数组';
+        if (gotCtx.messages[0].content !== '自定义参数') return '上下文里没有刚发的那条消息';
+      });
+
+      await test('buildCapabilityParams 自己抛错时，走正常失败路径而不是静默吞掉', async () => {
+        const { client, state } = makeClient(() => chunks(['不该走到这'], 0));
+        const chat = initChat({
+          key: 'cap-t5',
+          capability: client,
+          buildCapabilityParams: () => {
+            throw new Error('映射炸了');
+          },
+          silent: true,
+        });
+        cleanups.push(() => chat.destroy());
+        chat.sendMessage('触发映射异常');
+        const msgs = chat.getMessages();
+        if (state.calls.length !== 0) return '映射抛错了还是把请求发出去了';
+        if (msgs.length !== 1) return '消息数 ' + msgs.length + '，期望只有那条用户消息';
+        if (msgs[0].status !== 'error') return '用户消息没被标成 error';
+      });
+
+      await test('生成中途失败：错误标在【助手】消息上', async () => {
+        const { client } = makeClient(() =>
+          partialThenFail(['已经吐了一半'], 0, new ExecutionError('执行出错', 400)),
+        );
+        const chat = initChat({ key: 'cap-t6', capability: client, silent: true });
+        cleanups.push(() => chat.destroy());
+        chat.sendMessage('吐一半');
+        const ok = await waitFor(() => {
+          const msgs = chat.getMessages();
+          return msgs.length === 2 && msgs[1].status === 'error';
+        });
+        if (!ok) {
+          return '消息状态：' + JSON.stringify(chat.getMessages().map((m) => [m.role, m.status, m.content]));
+        }
+        const msgs = chat.getMessages();
+        if (msgs[0].status === 'error') return '连用户那条也被标红了';
+        if (msgs[1].content !== '已经吐了一半') return '半截正文丢了：' + JSON.stringify(msgs[1].content);
+      });
+
+      await test('一个 chunk 都没产出就失败：不留空气泡，标红用户消息', async () => {
+        const { client } = makeClient(() => boom(new ExecutionError('参数校验失败', 400)));
+        const chat = initChat({ key: 'cap-t7', capability: client, silent: true });
+        cleanups.push(() => chat.destroy());
+        chat.sendMessage('立刻失败');
+        const ok = await waitFor(() => chat.getMessages()[0] && chat.getMessages()[0].status === 'error');
+        if (!ok) return '用户消息没被标成 error';
+        const msgs = chat.getMessages();
+        if (msgs.length !== 1) {
+          return '多出 ' + (msgs.length - 1) + ' 条消息（空气泡）：' +
+            JSON.stringify(msgs.map((m) => [m.role, m.content]));
+        }
+      });
+
+      await test('onError 收到的是原始错误，且 isXxxError 判定可用', async () => {
+        let captured = null;
+        const { client } = makeClient(() => boom(new RateLimitError('k_ec_cap_006', '限流', 402)));
+        const chat = initChat({
+          key: 'cap-t8',
+          capability: client,
+          onError: (error) => { captured = error; },
+          silent: true,
+        });
+        cleanups.push(() => chat.destroy());
+        chat.sendMessage('触发额度错误');
+        await waitFor(() => captured !== null);
+        if (!captured) return 'onError 没被调用';
+        if (!isRateLimitError(captured)) return 'onError 收到的不是原始限流错误';
+        if (!isQuotaExhaustedError(captured)) return '额度耗尽判定在真实错误对象上失效了';
+      });
+
+      await test('destroy() 打断在途生成：不抛未处理的 rejection', async () => {
+        const rejections = [];
+        const onRejection = (e) => rejections.push(e);
+        window.addEventListener('unhandledrejection', onRejection);
+        const { client } = makeClient(() => chunks(['一', '二', '三'], 3000));
+        const chat = initChat({ key: 'cap-t9', capability: client, silent: true });
+        chat.sendMessage('然后立刻销毁');
+        await delay(30);
+        chat.destroy();
+        await delay(200);
+        window.removeEventListener('unhandledrejection', onRejection);
+        if (rejections.length) {
+          return '出现 ' + rejections.length + ' 个未处理的 rejection：' +
+            String(rejections[0].reason && rejections[0].reason.message);
+        }
+        if (chat.getElement() !== null) return 'destroy() 后没清理干净';
+      });
+
+      /* ---------- 收尾 ---------- */
+
+      for (const fn of cleanups) fn();
+
+      for (const item of list) {
+        const li = document.createElement('li');
+        li.className = item.status;
+        li.textContent = item.name;
+        if (item.status === 'skip') li.textContent += '（跳过）';
+        if (item.why) {
+          const span = document.createElement('span');
+          span.className = 'why';
+          span.textContent = '↳ ' + item.why;
+          li.appendChild(span);
+        }
+        resultsEl.appendChild(li);
+      }
+
+      const failed = list.filter((i) => i.status === 'fail').length;
+      const passed = list.filter((i) => i.status === 'pass').length;
+      const skipped = list.filter((i) => i.status === 'skip').length;
+
+      summaryEl.className = failed ? 'fail' : 'pass';
+      summaryEl.textContent = failed
+        ? failed + ' 项失败 / ' + passed + ' 项通过' + (skipped ? ' / ' + skipped + ' 项跳过' : '')
+        : '全部通过（' + passed + ' 项）' + (skipped ? '，' + skipped + ' 项跳过' : '');
+      document.title = (failed ? '❌ ' + failed + ' 项失败' : '✅ 全部通过') + ' · tdw-chat 能力注入';
+      window.__capabilityResult = { passed, failed, skipped, list };
+    </script>
+  </body>
+</html>
